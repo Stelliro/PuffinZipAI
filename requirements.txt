@@ -1,0 +1,4 @@
+numpy
+matplotlib
+psutil
+cupy-cuda11x

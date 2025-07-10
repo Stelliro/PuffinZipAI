@@ -1,0 +1,11 @@
+2025-07-10 13:51:27 - FATAL ERROR in run_gui.py: Could not import essential modules.
+Error: No module named 'numpy'
+Traceback:
+Traceback (most recent call last):
+  File "C:\Users\gike5\Desktop\AI_Python\PuffinZipAI_Project\run_gui.py", line 59, in <module>
+    from puffinzip_gui.primary_main_app import PuffinZipApp
+  File "C:\Users\gike5\Desktop\AI_Python\PuffinZipAI_Project\puffinzip_gui\primary_main_app.py", line 12, in <module>
+    import numpy as np
+ModuleNotFoundError: No module named 'numpy'
+
+Ensure PuffinZipAI_Project is correctly structured and in PYTHONPATH, or run from root.

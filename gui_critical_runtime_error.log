@@ -1,0 +1,64 @@
+2025-06-10 17:33:07
+CRITICAL ERROR: Failed to initialize the core AI Agent.
+Exception: AttributeError: '_tkinter.tkapp' object has no attribute 'app_target_device'
+Traceback:
+Traceback (most recent call last):
+  File "C:\Users\gike5\Desktop\AI Python\PuffinZip\PuffinZipAIV3\PuffinZipAI_Project\puffinzip_gui\primary_main_app.py", line 265, in __init__
+    self.ai_agent = PuffinZipAI(target_device=self.app_target_device)
+                                              ^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Program Files\WindowsApps\PythonSoftwareFoundation.Python.3.13_3.13.1008.0_x64__qbz5n2kfra8p0\Lib\tkinter\__init__.py", line 2546, in __getattr__
+    return getattr(self.tk, attr)
+AttributeError: '_tkinter.tkapp' object has no attribute 'app_target_device'
+
+2025-07-10 13:53:32
+CRITICAL ERROR: Failed to initialize the core AI Agent.
+Exception: AttributeError: '_tkinter.tkapp' object has no attribute 'app_target_device'
+Traceback:
+Traceback (most recent call last):
+  File "C:\Users\gike5\Desktop\AI_Python\PuffinZipAI_Project\puffinzip_gui\primary_main_app.py", line 265, in __init__
+    self.ai_agent = PuffinZipAI(target_device=self.app_target_device)
+                                              ^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\gike5\AppData\Local\Programs\Python\Python311\Lib\tkinter\__init__.py", line 2429, in __getattr__
+    return getattr(self.tk, attr)
+           ^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: '_tkinter.tkapp' object has no attribute 'app_target_device'
+
+2025-07-10 14:00:50
+CRITICAL ERROR: Failed to initialize the core AI Agent.
+Exception: AttributeError: '_tkinter.tkapp' object has no attribute 'app_target_device'
+Traceback:
+Traceback (most recent call last):
+  File "C:\Users\gike5\Desktop\AI_Python\PuffinZipAI_Project\puffinzip_gui\primary_main_app.py", line 265, in __init__
+    self.ai_agent = PuffinZipAI(target_device=self.app_target_device)
+                                              ^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\gike5\AppData\Local\Programs\Python\Python311\Lib\tkinter\__init__.py", line 2429, in __getattr__
+    return getattr(self.tk, attr)
+           ^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: '_tkinter.tkapp' object has no attribute 'app_target_device'
+
+2025-07-10 14:01:23
+CRITICAL ERROR: Failed to initialize the core AI Agent.
+Exception: AttributeError: '_tkinter.tkapp' object has no attribute 'app_target_device'
+Traceback:
+Traceback (most recent call last):
+  File "C:\Users\gike5\Desktop\AI_Python\PuffinZipAI_Project\puffinzip_gui\primary_main_app.py", line 265, in __init__
+    self.ai_agent = PuffinZipAI(target_device=self.app_target_device)
+                                              ^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\gike5\AppData\Local\Programs\Python\Python311\Lib\tkinter\__init__.py", line 2429, in __getattr__
+    return getattr(self.tk, attr)
+           ^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: '_tkinter.tkapp' object has no attribute 'app_target_device'
+
+2025-07-10 14:01:35
+CRITICAL ERROR: Failed to initialize the core AI Agent.
+Exception: AttributeError: '_tkinter.tkapp' object has no attribute 'app_target_device'
+Traceback:
+Traceback (most recent call last):
+  File "C:\Users\gike5\Desktop\AI_Python\PuffinZipAI_Project\puffinzip_gui\primary_main_app.py", line 265, in __init__
+    self.ai_agent = PuffinZipAI(target_device=self.app_target_device)
+                                              ^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\gike5\AppData\Local\Programs\Python\Python311\Lib\tkinter\__init__.py", line 2429, in __getattr__
+    return getattr(self.tk, attr)
+           ^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: '_tkinter.tkapp' object has no attribute 'app_target_device'
+

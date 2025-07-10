@@ -1,0 +1,16 @@
+Continue PuffinZipAI project.
+
+We are working on a Python application called PuffinZipAI.
+It has a GUI (main_app.py using Tkinter) and a core AI logic module (ai_core.py).
+We've structured the project into packages: `puffinzip_ai` (containing `ai_core.py`, `logger.py`, `config.py`, `rle_utils.py`) and `puffinzip_gui` (containing `main_app.py`).
+There are also top-level scripts: `run_gui.py` and `main_cli.py`.
+
+The RLE (Run-Length Encoding) functions are in `rle_utils.py`.
+The core Q-learning agent is in `ai_core.py`.
+The GUI is in `main_app.py`.
+Constants are managed in `config.py`.
+Logging is managed by `logger.py`.
+
+We just added a new "Analysis & Stats" tab to the GUI and need to implement the actual charting functionality using `puffinzip_gui/chart_utils.py`.
+
+Provide the complete, corrected code for `PuffinZipAI_Project/puffinzip_ai/ai_core.py`, ensuring it has robust stop-event checking and GIL yielding (e.g., `time.sleep(0.001)` in tight loops within `train`, `learn_from_folder`, `_process_batch`, and `test_agent_on_random_items`) to prevent the GUI from freezing. Also, make sure training statistics like average reward over recent batches are calculated and sent to the GUI. The code should be ready to integrate with the provided `main_app.py` and `chart_utils.py`.
