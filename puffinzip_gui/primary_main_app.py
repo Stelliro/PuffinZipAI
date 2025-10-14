@@ -209,31 +209,13 @@ class PuffinZipApp(tk.Tk):
                                                                       int) and FONT_SIZE_BASE_CONFIG > 0 else DEFAULT_FONT_SIZE_BASE_CONFIG
         font_family_mono_from_cfg = FONT_FAMILY_MONO_CONFIG if FONT_FAMILY_MONO_CONFIG else DEFAULT_FONT_FAMILY_MONO_CONFIG
 
-        font_size_small_derived = max(7, font_size_base_from_cfg - 1);
-        font_size_large_derived = font_size_base_from_cfg + 2
-        _pfn = (font_family_primary_from_cfg, font_size_base_from_cfg, "normal");
-        _pfb = (font_family_primary_from_cfg, font_size_base_from_cfg, "bold");
-        _pfst = (font_family_primary_from_cfg, font_size_large_derived, "bold");
-        _pfbtn = (font_family_primary_from_cfg, font_size_base_from_cfg, "normal");
-        _pfsml = (font_family_primary_from_cfg, font_size_small_derived, "normal")
-        _pfsb = (font_family_primary_from_cfg, font_size_small_derived, "normal");
-        _pfnte = (font_family_primary_from_cfg, font_size_small_derived, "italic");
-        _pfmno = (font_family_mono_from_cfg, font_size_base_from_cfg, "normal")
         if gui_utils:
-            self.FONT_NORMAL = gui_utils._get_font_with_fallbacks(self, _pfn,
-                                                                  ("Arial", font_size_base_from_cfg, "normal"));
-            self.FONT_BOLD = gui_utils._get_font_with_fallbacks(self, _pfb, ("Arial", font_size_base_from_cfg, "bold"));
-            self.FONT_SECTION_TITLE = gui_utils._get_font_with_fallbacks(self, _pfst,
-                                                                         ("Arial", font_size_large_derived, "bold"));
-            self.FONT_BUTTON = gui_utils._get_font_with_fallbacks(self, _pfbtn,
-                                                                  ("Arial", font_size_base_from_cfg, "normal"));
-            self.FONT_SMALL = gui_utils._get_font_with_fallbacks(self, _pfsml, ("Arial", font_size_small_derived, "normal"))
-            self.FONT_SMALL_BUTTON = gui_utils._get_font_with_fallbacks(self, _pfsb,
-                                                                        ("Arial", font_size_small_derived, "normal"));
-            self.FONT_NOTE = gui_utils._get_font_with_fallbacks(self, _pfnte,
-                                                                ("Arial", font_size_small_derived, "italic"));
-            self.FONT_MONO = gui_utils._get_font_with_fallbacks(self, _pfmno,
-                                                                ("Courier New", font_size_base_from_cfg, "normal"))
+            gui_utils.initialize_app_fonts(
+                self,
+                font_family_primary_from_cfg,
+                font_size_base_from_cfg,
+                font_family_mono_from_cfg,
+            )
         else:
             self.FONT_NORMAL = ("Arial", 10, "normal");
             self.FONT_BOLD = ("Arial", 10, "bold");
@@ -629,31 +611,8 @@ class PuffinZipApp(tk.Tk):
                                                                  int) and FONT_SIZE_BASE_CONFIG > 0 else DEFAULT_FONT_SIZE_BASE_CONFIG
             font_fam_mono = FONT_FAMILY_MONO_CONFIG if FONT_FAMILY_MONO_CONFIG else DEFAULT_FONT_FAMILY_MONO_CONFIG
 
-            font_size_small = max(7, font_size_base - 1);
-            font_size_large = font_size_base + 2
-            _pfn_r = (font_fam_prim, font_size_base, "normal");
-            _pfb_r = (font_fam_prim, font_size_base, "bold");
-            _pfst_r = (font_fam_prim, font_size_large, "bold");
-            _pfbtn_r = (font_fam_prim, font_size_base, "normal");
-            _pfsb_r = (font_fam_prim, font_size_small, "normal");
-            _pfsml_r = (font_fam_prim, font_size_small, "normal")
-            _pfnte_r = (font_fam_prim, font_size_small, "italic");
-            _pfmno_r = (font_fam_mono, font_size_base, "normal")
             if gui_utils:
-                self.FONT_NORMAL = gui_utils._get_font_with_fallbacks(self, _pfn_r,
-                                                                      ("Arial", font_size_base, "normal"));
-                self.FONT_BOLD = gui_utils._get_font_with_fallbacks(self, _pfb_r, ("Arial", font_size_base, "bold"));
-                self.FONT_SECTION_TITLE = gui_utils._get_font_with_fallbacks(self, _pfst_r,
-                                                                             ("Arial", font_size_large, "bold"));
-                self.FONT_BUTTON = gui_utils._get_font_with_fallbacks(self, _pfbtn_r,
-                                                                      ("Arial", font_size_base, "normal"));
-                self.FONT_SMALL = gui_utils._get_font_with_fallbacks(self, _pfsml_r, ("Arial", font_size_small, "normal"))
-                self.FONT_SMALL_BUTTON = gui_utils._get_font_with_fallbacks(self, _pfsb_r,
-                                                                            ("Arial", font_size_small, "normal"));
-                self.FONT_NOTE = gui_utils._get_font_with_fallbacks(self, _pfnte_r,
-                                                                    ("Arial", font_size_small, "italic"));
-                self.FONT_MONO = gui_utils._get_font_with_fallbacks(self, _pfmno_r,
-                                                                    ("Courier New", font_size_base, "normal"))
+                gui_utils.initialize_app_fonts(self, font_fam_prim, font_size_base, font_fam_mono)
             self.configure(bg=self.BG_COLOR)
         except Exception as e_reload_cfg:
             pass
