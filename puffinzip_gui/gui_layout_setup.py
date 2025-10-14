@@ -14,8 +14,8 @@ except ImportError:
         print("CRITICAL (gui_layout_setup.py): gui_utils.py not found via relative or package-level import. Layout helper functions will be missing.")
         gui_utils = None
 
-if gui_utils and hasattr(gui_utils, '_get_theme_attr'):
-    _get_theme_attr_l = gui_utils._get_theme_attr
+if gui_utils and hasattr(gui_utils, 'get_theme_attr'):
+    _get_theme_attr_l = gui_utils.get_theme_attr
 else:
     def _get_theme_attr_l(app_instance, attr_name, default_value):
         log_to_use = getattr(app_instance, 'logger', logging.getLogger("GuiLayoutSetup_FallbackLogger"))
@@ -55,20 +55,29 @@ def setup_main_layout(app_instance):
     left_controls_outer_frame = ttk.Frame(main_controls_paned_window, style="TFrame", width=430)
     left_controls_outer_frame.pack_propagate(False)
     main_controls_paned_window.add(left_controls_outer_frame, weight=0)
-    frame_bg_for_canvas = _get_theme_attr_l(app_instance, 'FRAME_BG', "#3C3C3C")
-    app_instance.ctrl_canvas = tk.Canvas(left_controls_outer_frame, bg=frame_bg_for_canvas, highlightthickness=0, bd=0)
-    app_instance.ctrl_scrollbar = ttk.Scrollbar(left_controls_outer_frame, orient=tk.VERTICAL, command=app_instance.ctrl_canvas.yview, style="Vertical.TScrollbar")
-    app_instance.ctrl_canvas.configure(yscrollcommand=app_instance.ctrl_scrollbar.set)
+    if gui_utils and hasattr(gui_utils, 'create_scrollable_canvas'):
+        app_instance.ctrl_canvas, app_instance.ctrl_scrollbar = gui_utils.create_scrollable_canvas(
+            left_controls_outer_frame, app_instance
+        )
+    else:
+        frame_bg_for_canvas = _get_theme_attr_l(app_instance, 'FRAME_BG', "#3C3C3C")
+        app_instance.ctrl_canvas = tk.Canvas(left_controls_outer_frame, bg=frame_bg_for_canvas, highlightthickness=0, bd=0)
+        app_instance.ctrl_scrollbar = ttk.Scrollbar(left_controls_outer_frame, orient=tk.VERTICAL, command=app_instance.ctrl_canvas.yview, style="Vertical.TScrollbar")
+        app_instance.ctrl_canvas.configure(yscrollcommand=app_instance.ctrl_scrollbar.set)
     app_instance.ctrl_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
     app_instance.ctrl_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
     app_instance.main_controls_tab_scrollable_frame = ttk.Frame(app_instance.ctrl_canvas, style="Scrollable.TFrame", padding=(15, 15, 20, 15))
     app_instance.scrollable_frame_window_id = app_instance.ctrl_canvas.create_window((0, 0), window=app_instance.main_controls_tab_scrollable_frame, anchor="nw")
     if hasattr(app_instance, 'on_frame_configure') and callable(app_instance.on_frame_configure):
         app_instance.main_controls_tab_scrollable_frame.bind("<Configure>", lambda e: app_instance.on_frame_configure(app_instance.ctrl_canvas, app_instance.main_controls_tab_scrollable_frame, e))
+    elif gui_utils and hasattr(gui_utils, 'on_frame_configure'):
+        app_instance.main_controls_tab_scrollable_frame.bind("<Configure>", lambda e: gui_utils.on_frame_configure(app_instance.ctrl_canvas, app_instance.main_controls_tab_scrollable_frame, e))
     else:
         logger.error("PMA missing on_frame_configure method! Scrollable area might not resize.")
     if hasattr(app_instance, 'on_canvas_configure') and callable(app_instance.on_canvas_configure):
         app_instance.ctrl_canvas.bind("<Configure>", lambda e: app_instance.on_canvas_configure(e, app_instance.scrollable_frame_window_id, app_instance.ctrl_canvas))
+    elif gui_utils and hasattr(gui_utils, 'on_canvas_configure'):
+        app_instance.ctrl_canvas.bind("<Configure>", lambda e: gui_utils.on_canvas_configure(e, app_instance.scrollable_frame_window_id, app_instance.ctrl_canvas))
     else:
         logger.error("PMA missing on_canvas_configure method! Scrollable area might not resize correctly.")
     right_log_charts_paned_window = ttk.PanedWindow(main_controls_paned_window, orient=tk.VERTICAL, style="Vertical.TPanedwindow")

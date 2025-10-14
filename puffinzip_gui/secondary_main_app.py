@@ -13,8 +13,8 @@ except ImportError:
     except ImportError:
         gui_utils = None
 
-if gui_utils and hasattr(gui_utils, '_get_theme_attr'):
-    _get_theme_attr_l = gui_utils._get_theme_attr
+if gui_utils and hasattr(gui_utils, 'get_theme_attr'):
+    _get_theme_attr_l = gui_utils.get_theme_attr
 else:
     def _get_theme_attr_l(app_instance, attr_name, default_value):
         log_to_use = getattr(app_instance, 'logger', logging.getLogger("GuiLayoutSetup_FallbackLogger"))
@@ -82,24 +82,42 @@ def _create_section_frame(parent_frame, title_text, app_instance):
 def populate_evolution_controls_tab_content(app):  # Renamed from populate_evolution_lab_tab_content
     active_chart_utils = app.chart_utils
 
-    app.els_canvas = tk.Canvas(app.evolution_controls_tab, bg=_get_theme_attr_l(app, 'FRAME_BG', '#333333'),
-                               highlightthickness=0, bd=0)
-    app.els_scrollbar = ttk.Scrollbar(app.evolution_controls_tab, orient=tk.VERTICAL, command=app.els_canvas.yview,
-                                      style="Vertical.TScrollbar")
-    app.els_canvas.configure(yscrollcommand=app.els_scrollbar.set)
+    if gui_utils and hasattr(gui_utils, 'create_scrollable_canvas'):
+        app.els_canvas, app.els_scrollbar = gui_utils.create_scrollable_canvas(
+            app.evolution_controls_tab, app
+        )
+    else:
+        app.els_canvas = tk.Canvas(app.evolution_controls_tab, bg=_get_theme_attr_l(app, 'FRAME_BG', '#333333'),
+                                   highlightthickness=0, bd=0)
+        app.els_scrollbar = ttk.Scrollbar(app.evolution_controls_tab, orient=tk.VERTICAL, command=app.els_canvas.yview,
+                                          style="Vertical.TScrollbar")
+        app.els_canvas.configure(yscrollcommand=app.els_scrollbar.set)
     app.els_scrollbar.pack(side=tk.RIGHT, fill=tk.Y, padx=(0, 2), pady=(2, 0))
     app.els_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(2, 0), pady=(2, 0))
 
     app.els_scrollable_frame = ttk.Frame(app.els_canvas, style="Scrollable.TFrame", padding=(15, 15))
     app.els_scrollable_frame_id = app.els_canvas.create_window((0, 0), window=app.els_scrollable_frame, anchor="nw")
 
-    app.els_scrollable_frame.bind("<Configure>",
-                                  lambda e: app.on_frame_configure(app.els_canvas, app.els_scrollable_frame, e),
-                                  add="+")
-    app.els_canvas.bind("<Configure>",
-                        lambda e, sfid=app.els_scrollable_frame_id, cv=app.els_canvas: app.on_canvas_configure(e, sfid,
-                                                                                                               cv),
-                        add="+")
+    if hasattr(app, 'on_frame_configure') and callable(app.on_frame_configure):
+        app.els_scrollable_frame.bind("<Configure>",
+                                      lambda e: app.on_frame_configure(app.els_canvas, app.els_scrollable_frame, e),
+                                      add="+")
+    elif gui_utils and hasattr(gui_utils, 'on_frame_configure'):
+        app.els_scrollable_frame.bind("<Configure>",
+                                      lambda e: gui_utils.on_frame_configure(app.els_canvas, app.els_scrollable_frame, e),
+                                      add="+")
+
+    if hasattr(app, 'on_canvas_configure') and callable(app.on_canvas_configure):
+        app.els_canvas.bind("<Configure>",
+                            lambda e, sfid=app.els_scrollable_frame_id, cv=app.els_canvas: app.on_canvas_configure(e, sfid, cv),
+                            add="+")
+    elif gui_utils and hasattr(gui_utils, 'on_canvas_configure'):
+        app.els_canvas.bind("<Configure>",
+                            lambda e, sfid=app.els_scrollable_frame_id, cv=app.els_canvas: gui_utils.on_canvas_configure(e, sfid, cv),
+                            add="+")
+
+    if gui_utils and hasattr(gui_utils, 'bind_scroll_events'):
+        gui_utils.bind_scroll_events(app.els_scrollable_frame, app.els_canvas, app)
     pf = app.els_scrollable_frame
 
     benchmark_config_frame = _create_section_frame(pf, "Benchmark Setup for New Evolution Run", app)
