@@ -74,6 +74,8 @@ EDITABLE_SETTINGS = {
     "DEFAULT_ADDITIONAL_ELS_GENERATIONS": {"type": int, "min": 1, "max": 1000, "default": 30,
                                            "label": "Additional Generations",
                                            "tooltip": "Generations to add when continuing ELS."},
+    "ELS_CONTINUOUS_RUN_ENABLED": {"type": bool, "default": True, "label": "Continuous ELS Run",
+                                   "tooltip": "If enabled, the evolutionary loop keeps generating new agents until manually stopped."},
     "DEFAULT_MUTATION_RATE": {"type": float, "min": 0.0, "max": 1.0, "step": 0.01, "default": 0.15,
                               "label": "Base Mutation Rate",
                               "tooltip": "Base probability of an agent's parameters mutating (0.0-1.0)."},
@@ -121,6 +123,9 @@ EDITABLE_SETTINGS = {
                                            "options_logic": "get_data_complexity_levels"},
     "BENCHMARK_DATASET_PATH": {"type": str, "is_path": True, "default": None, "label": "Static Benchmark Path",
                                "tooltip": "Path to a folder of static benchmark files. If set, dynamic benchmarking (above) is usually off unless this path is invalid."},
+    "GPU_RLE_TARGET_VRAM_USAGE_FRACTION": {"type": float, "min": 0.0, "max": 0.98, "step": 0.01, "default": 0.92,
+                                           "label": "GPU RLE VRAM Usage Target",
+                                           "tooltip": "Fraction of total GPU VRAM to reserve for RLE workspace to maximize GPU utilization."},
 }
 
 

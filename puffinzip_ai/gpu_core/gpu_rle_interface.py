@@ -1,6 +1,7 @@
 # PuffinZipAI_Project/puffinzip_ai/gpu_core/gpu_rle_interface.py
 import logging
-from typing import List, Tuple, Union
+import threading
+from typing import List, Tuple, Union, Optional
 
 import numpy as np
 
@@ -49,6 +50,20 @@ except ImportError:
     logger.critical("Could not import CPU RLE functions for GPU interface fallback. This is a critical error.")
 
 
+
+
+try:
+    from ..config import (
+        GPU_RLE_TARGET_VRAM_USAGE_FRACTION,
+        GPU_RLE_WORKSPACE_MIN_MB,
+        GPU_RLE_WORKSPACE_MAX_MB,
+    )
+except ImportError:
+    GPU_RLE_TARGET_VRAM_USAGE_FRACTION = 0.0
+    GPU_RLE_WORKSPACE_MIN_MB = 0
+    GPU_RLE_WORKSPACE_MAX_MB = 0
+
+
 try:
     import cupy as cp
     CUPY_AVAILABLE = True
@@ -69,6 +84,97 @@ try:
 except ImportError:
     logger.debug("Numba not available for GPU RLE.")
     pass
+
+
+_GPU_WORKSPACE_BUFFERS = {}
+_GPU_WORKSPACE_LOCK = threading.Lock()
+
+
+def _get_total_mem_bytes(props) -> int:
+    total_mem = 0
+    if isinstance(props, dict):
+        total_mem = int(props.get("totalGlobalMem", 0))
+    else:
+        total_mem = int(getattr(props, "totalGlobalMem", 0) or 0)
+    return max(total_mem, 0)
+
+
+def _ensure_workspace_allocation(gpu_id: int, required_elements: int = 0) -> Optional["cp.ndarray"]:  # type: ignore[name-defined]
+    if not CUPY_AVAILABLE:
+        return None
+
+    target_fraction = float(max(0.0, min(0.98, GPU_RLE_TARGET_VRAM_USAGE_FRACTION)))
+    min_bytes_cfg = int(max(0, GPU_RLE_WORKSPACE_MIN_MB) * 1024 * 1024)
+    max_bytes_cfg = int(max(0, GPU_RLE_WORKSPACE_MAX_MB) * 1024 * 1024) if GPU_RLE_WORKSPACE_MAX_MB else 0
+
+    with _GPU_WORKSPACE_LOCK:
+        existing = _GPU_WORKSPACE_BUFFERS.get(gpu_id)
+        if existing is not None and required_elements and existing.size >= required_elements:
+            return existing
+
+    with cp.cuda.Device(gpu_id):
+        props = cp.cuda.runtime.getDeviceProperties(gpu_id)
+        total_mem_bytes = _get_total_mem_bytes(props)
+        if total_mem_bytes <= 0 and required_elements <= 0:
+            return None
+
+        target_bytes = int(total_mem_bytes * target_fraction) if total_mem_bytes > 0 else 0
+        required_bytes = int(required_elements) * np.dtype(np.uint32).itemsize if required_elements else 0
+        if required_bytes > 0:
+            target_bytes = max(target_bytes, required_bytes)
+        if min_bytes_cfg > 0:
+            target_bytes = max(target_bytes, min_bytes_cfg)
+        if max_bytes_cfg > 0:
+            target_bytes = min(target_bytes, max_bytes_cfg)
+
+        if target_bytes <= 0:
+            if required_bytes > 0:
+                target_bytes = required_bytes
+            else:
+                return None
+
+        target_elements = max(1, target_bytes // np.dtype(np.uint32).itemsize)
+
+        with _GPU_WORKSPACE_LOCK:
+            existing = _GPU_WORKSPACE_BUFFERS.get(gpu_id)
+            if existing is not None and existing.size >= target_elements:
+                return existing
+
+        attempt_elements = max(target_elements, required_elements)
+        min_elements_allowed = max(1, required_elements if required_elements else (min_bytes_cfg // np.dtype(np.uint32).itemsize if min_bytes_cfg else 1))
+
+        while attempt_elements >= min_elements_allowed:
+            try:
+                workspace = cp.empty(int(attempt_elements), dtype=cp.uint32)
+                with _GPU_WORKSPACE_LOCK:
+                    _GPU_WORKSPACE_BUFFERS[gpu_id] = workspace
+                logger.info(
+                    "GPU RLE reserved %.1f MB on device %s for workspace (elements=%d).",
+                    workspace.nbytes / (1024 * 1024),
+                    gpu_id,
+                    workspace.size,
+                )
+                return workspace
+            except CuPyOutOfMemoryError:
+                attempt_elements = int(max(min_elements_allowed, attempt_elements * 0.75))
+
+        logger.warning(
+            "GPU RLE could not reserve workspace on device %s (required_elements=%d).",
+            gpu_id,
+            required_elements,
+        )
+        with _GPU_WORKSPACE_LOCK:
+            _GPU_WORKSPACE_BUFFERS.pop(gpu_id, None)
+        return None
+
+
+def _acquire_workspace_slice(gpu_id: int, required_length: int) -> Optional["cp.ndarray"]:  # type: ignore[name-defined]
+    if required_length <= 0:
+        return None
+    workspace = _ensure_workspace_allocation(gpu_id, required_length)
+    if workspace is None or workspace.size < required_length:
+        return None
+    return workspace[:required_length]
 
 
 def _encode_string_to_codepoints(text: str) -> np.ndarray:
@@ -224,7 +330,13 @@ def gpu_accelerated_rle_compress(
     try:
         host_codepoints = _encode_string_to_codepoints(text_data)
         with cp.cuda.Device(gpu_id):
-            gpu_codepoints = cp.asarray(host_codepoints)
+            workspace_view = _acquire_workspace_slice(gpu_id, host_codepoints.size)
+            if workspace_view is not None:
+                workspace_view[:host_codepoints.size] = host_codepoints
+                gpu_codepoints = workspace_view
+            else:
+                gpu_codepoints = cp.asarray(host_codepoints)
+
             run_lengths_gpu, run_values_gpu = _build_run_boundaries_gpu(gpu_codepoints)
             run_lengths = cp.asnumpy(run_lengths_gpu)
             run_values = cp.asnumpy(run_values_gpu)
@@ -287,42 +399,90 @@ def gpu_accelerated_rle_decompress(compressed_text_data: str, method: str = "sim
 
     try:
         with cp.cuda.Device(gpu_id):
-            gpu_segments: List = []
-            for is_run, payload in segments:
-                if is_run:
-                    count, char = payload  # type: ignore[misc]
-                    try:
-                        count_int = int(count)
-                    except (TypeError, ValueError):
-                        return "ERROR_INVALID_RLE_FORMAT_BAD_COUNT"
+            workspace_view = _acquire_workspace_slice(gpu_id, total_length)
+            gpu_result = None
 
-                    if count_int <= 0:
-                        continue
+            if workspace_view is not None:
+                combined_gpu = workspace_view[:total_length]
+                offset = 0
+                for is_run, payload in segments:
+                    if is_run:
+                        count, char = payload  # type: ignore[misc]
+                        try:
+                            count_int = int(count)
+                        except (TypeError, ValueError):
+                            return "ERROR_INVALID_RLE_FORMAT_BAD_COUNT"
 
-                    char_code = ord(char)
-                    gpu_segments.append(
-                        cp.repeat(cp.array([char_code], dtype=cp.uint32), count_int)
+                        if count_int <= 0:
+                            continue
+
+                        end_idx = min(combined_gpu.size, offset + count_int)
+                        combined_gpu[offset:end_idx] = ord(char)
+                        offset = end_idx
+                    else:
+                        literal = payload  # type: ignore[misc]
+                        if not literal:
+                            continue
+                        literal_codes = _encode_string_to_codepoints(literal)
+                        if literal_codes.size == 0:
+                            continue
+                        end_idx = min(combined_gpu.size, offset + literal_codes.size)
+                        slice_len = end_idx - offset
+                        if slice_len <= 0:
+                            continue
+                        combined_gpu[offset:end_idx] = literal_codes[:slice_len]
+                        offset = end_idx
+
+                if offset < total_length:
+                    logger.warning(
+                        "GPU RLE workspace fill undershot expected output (expected %s, wrote %s).",
+                        total_length,
+                        offset,
                     )
+                    gpu_result = combined_gpu[:offset]
                 else:
-                    literal = payload  # type: ignore[misc]
-                    if not literal:
-                        continue
-                    literal_codes = _encode_string_to_codepoints(literal)
-                    if literal_codes.size == 0:
-                        continue
-                    gpu_segments.append(cp.asarray(literal_codes))
+                    gpu_result = combined_gpu
+            else:
+                gpu_segments: List = []
+                for is_run, payload in segments:
+                    if is_run:
+                        count, char = payload  # type: ignore[misc]
+                        try:
+                            count_int = int(count)
+                        except (TypeError, ValueError):
+                            return "ERROR_INVALID_RLE_FORMAT_BAD_COUNT"
 
-            if not gpu_segments:
+                        if count_int <= 0:
+                            continue
+
+                        char_code = ord(char)
+                        gpu_segments.append(
+                            cp.repeat(cp.array([char_code], dtype=cp.uint32), count_int)
+                        )
+                    else:
+                        literal = payload  # type: ignore[misc]
+                        if not literal:
+                            continue
+                        literal_codes = _encode_string_to_codepoints(literal)
+                        if literal_codes.size == 0:
+                            continue
+                        gpu_segments.append(cp.asarray(literal_codes))
+
+                if not gpu_segments:
+                    return ""
+
+                gpu_result = cp.concatenate(gpu_segments)
+                if gpu_result.size != total_length:
+                    logger.warning(
+                        "GPU RLE decompress size mismatch (expected %s, got %s).",
+                        total_length,
+                        gpu_result.size,
+                    )
+
+            if gpu_result is None or gpu_result.size == 0:
                 return ""
 
-            combined_gpu = cp.concatenate(gpu_segments)
-            if combined_gpu.size != total_length:
-                logger.warning(
-                    "GPU RLE decompress size mismatch (expected %s, got %s).",
-                    total_length,
-                    combined_gpu.size,
-                )
-            host_codepoints = cp.asnumpy(combined_gpu)
+            host_codepoints = cp.asnumpy(gpu_result)
     except CuPyOutOfMemoryError:
         logger.error("GPU RLE decompress ran out of memory; falling back to CPU implementation.")
         return cpu_rle_decompress(compressed_text_data, method=method, min_run_len_override=min_run_len_override)
@@ -362,3 +522,4 @@ if __name__ == '__main__':
         print("GPU interface round-trip: PASS")
     else:
         print("GPU interface round-trip: FAIL")
+

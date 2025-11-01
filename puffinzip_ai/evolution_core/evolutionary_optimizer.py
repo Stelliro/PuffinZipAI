@@ -1,4 +1,5 @@
 # PuffinZipAI_Project/puffinzip_ai/evolution_core/evolutionary_optimizer.py
+import itertools
 import logging
 import os
 import queue
@@ -40,7 +41,8 @@ from ..config import (
     DYNAMIC_BENCHMARK_REFRESH_INTERVAL_GENS as CONFIG_DYNAMIC_BENCH_REFRESH,
     INITIAL_BENCHMARK_COMPLEXITY_LEVEL as CONFIG_INITIAL_BENCH_COMPLEXITY,
     ACCELERATION_TARGET_DEVICE as CONFIG_ACCELERATION_TARGET_DEVICE,
-    DEFAULT_ADDITIONAL_ELS_GENERATIONS
+    DEFAULT_ADDITIONAL_ELS_GENERATIONS,
+    ELS_CONTINUOUS_RUN_ENABLED,
 )
 from ..logger import setup_logger
 
@@ -179,7 +181,8 @@ class EvolutionaryOptimizer:
             'DYNAMIC_BENCHMARKING_ACTIVE_BY_DEFAULT': DYNAMIC_BENCHMARKING_ACTIVE_BY_DEFAULT,
             'DYNAMIC_BENCHMARK_REFRESH_INTERVAL_GENS': CONFIG_DYNAMIC_BENCH_REFRESH,
             'INITIAL_BENCHMARK_COMPLEXITY_LEVEL': CONFIG_INITIAL_BENCH_COMPLEXITY,
-            'ACCELERATION_TARGET_DEVICE': CONFIG_ACCELERATION_TARGET_DEVICE
+            'ACCELERATION_TARGET_DEVICE': CONFIG_ACCELERATION_TARGET_DEVICE,
+            'ELS_CONTINUOUS_RUN_ENABLED': ELS_CONTINUOUS_RUN_ENABLED,
         }
         self.els_target_device = target_device if target_device is not None else self.config_get(
             'ACCELERATION_TARGET_DEVICE')
@@ -822,7 +825,17 @@ class EvolutionaryOptimizer:
                                                    self.initial_benchmark_fixed_complexity_name)
             if self.gui_stop_event.is_set(): self.logger.info(
                 "ELS setup for new run stopped (post-benchmark refresh).");return
-        
+
+        continuous_mode = bool(self.config_get('ELS_CONTINUOUS_RUN_ENABLED', False))
+        if isinstance(self.tuned_params, dict) and 'ELS_CONTINUOUS_RUN_ENABLED' in self.tuned_params:
+            try:
+                continuous_mode = bool(self.tuned_params['ELS_CONTINUOUS_RUN_ENABLED'])
+            except Exception:
+                self.logger.warning("Invalid tuned parameter for ELS_CONTINUOUS_RUN_ENABLED; using config default.")
+
+        if continuous_mode:
+            run_title = f"{run_title} [Continuous Mode]"
+
         # Continuation also needs a check if something changed
         if is_continuation and not self._pre_run_hardware_check():
             self.logger.critical("Pre-run hardware check FAILED for continuation. Aborting ELS continue.")
@@ -831,11 +844,22 @@ class EvolutionaryOptimizer:
 
         self.logger.info(run_title);
         self._send_to_gui(run_title)
+        if continuous_mode:
+            continuous_msg = "ELS continuous generation mode active: evolution will continue until a stop signal is received."
+            self.logger.info(continuous_msg)
+            self._send_to_gui(continuous_msg)
         if not is_continuation: self._send_fitness_history_to_gui()
         completed_generations_this_segment = 0;
-        target_total_gens_to_reach = start_gen_0_idx + target_num_generations_in_run
+        if continuous_mode:
+            target_total_gens_to_reach = float('inf')
+            generation_iterator = itertools.count(start_gen_0_idx)
+            target_total_label_str = "∞"
+        else:
+            target_total_gens_to_reach = start_gen_0_idx + target_num_generations_in_run
+            generation_iterator = range(start_gen_0_idx, target_total_gens_to_reach)
+            target_total_label_str = str(target_total_gens_to_reach)
         try:
-            for current_absolute_gen_0_idx in range(start_gen_0_idx, target_total_gens_to_reach):
+            for current_absolute_gen_0_idx in generation_iterator:
                 if self.gui_stop_event.is_set(): self.logger.info(
                     f"ELS run stop signal DETECTED at start of Gen {current_absolute_gen_0_idx + 1} loop.");break
                 self.total_generations_elapsed = current_absolute_gen_0_idx;
@@ -845,9 +869,9 @@ class EvolutionaryOptimizer:
                     f"ELS run stopping before Gen {current_gen_display} full processing (post-benchmark).");break
 
                 self.logger.info(
-                    f"--- ELS Gen {current_gen_display}/{target_total_gens_to_reach} --- MutRate: {self.current_mutation_rate:.4f}, Elitism: {self.elitism_count} ---");
+                    f"--- ELS Gen {current_gen_display}/{target_total_label_str} --- MutRate: {self.current_mutation_rate:.4f}, Elitism: {self.elitism_count} ---");
                 self._send_to_gui(
-                    f"--- ELS Gen {current_gen_display}/{target_total_gens_to_reach} --- (Rate: {self.current_mutation_rate:.3f}, Elitism: {self.elitism_count})")
+                    f"--- ELS Gen {current_gen_display}/{target_total_label_str} --- (Rate: {self.current_mutation_rate:.3f}, Elitism: {self.elitism_count})")
 
                 if self.pause_event.is_set():
                     self.logger.info(f"ELS PAUSED Gen {current_gen_display}.");
