@@ -57,44 +57,49 @@ exit /b %EXIT_CODE%
 
 :RepairPip
 set "REPAIR_PYTHON=%~1"
-    echo Warning: Failed to upgrade pip. Attempting to repair pip with ensurepip...
-    set "REPAIR_HELPER=%TEMP%\pip_repair_%RANDOM%.py"
-    > "%REPAIR_HELPER%" (
-        echo import ensurepip
-        echo import pathlib
-        echo import shutil
-        echo import sysconfig
-        echo.
-        echo def purge(path):
-        echo     if path.is_dir():
-        echo         shutil.rmtree(path, ignore_errors=True)
-        echo     elif path.exists():
-        echo         try:
-        echo             path.unlink()
-        echo         except FileNotFoundError:
-        echo             pass
-        echo.
-        echo locations = set()
-        echo for key in ("purelib", "platlib"):
-        echo     value = sysconfig.get_paths().get(key)
-        echo     if value:
-        echo         locations.add(pathlib.Path(value))
-        echo.
-        echo for base in list(locations):
-        echo     for candidate in base.glob("pip*"):
-        echo         name = candidate.name.lower()
-        echo         if name == "pip" or name.startswith("pip-") or name.startswith("pip_"):
-        echo             purge(candidate)
-        echo.
-        echo ensurepip.bootstrap(upgrade=True)
-    )
-    "%REPAIR_PYTHON%" "%REPAIR_HELPER%"
-    set "REPAIR_EXIT=%ERRORLEVEL%"
-    del "%REPAIR_HELPER%" >nul 2>&1
-    if not "%REPAIR_EXIT%" == "0" (
-        echo Warning: Failed to repair pip via ensurepip. Continuing with the existing version.
-        goto :EOF
-    )
+echo Warning: Failed to upgrade pip. Attempting to repair pip with ensurepip...
+set "REPAIR_HELPER=%TEMP%\pip_repair_%RANDOM%.py"
+if exist "%REPAIR_HELPER%" del "%REPAIR_HELPER%" >nul 2>&1
+>"%REPAIR_HELPER%" echo import ensurepip
+>>"%REPAIR_HELPER%" echo import pathlib
+>>"%REPAIR_HELPER%" echo import shutil
+>>"%REPAIR_HELPER%" echo import sysconfig
+>>"%REPAIR_HELPER%" echo import sys
+>>"%REPAIR_HELPER%" echo.
+>>"%REPAIR_HELPER%" echo def purge(path):
+>>"%REPAIR_HELPER%" echo     if path.is_dir():
+>>"%REPAIR_HELPER%" echo         shutil.rmtree(path, ignore_errors=True)
+>>"%REPAIR_HELPER%" echo     elif path.exists():
+>>"%REPAIR_HELPER%" echo         try:
+>>"%REPAIR_HELPER%" echo             path.unlink()
+>>"%REPAIR_HELPER%" echo         except FileNotFoundError:
+>>"%REPAIR_HELPER%" echo             pass
+>>"%REPAIR_HELPER%" echo.
+>>"%REPAIR_HELPER%" echo locations = set()
+>>"%REPAIR_HELPER%" echo for key in ("purelib", "platlib"):
+>>"%REPAIR_HELPER%" echo     value = sysconfig.get_paths().get(key)
+>>"%REPAIR_HELPER%" echo     if value:
+>>"%REPAIR_HELPER%" echo         locations.add(pathlib.Path(value))
+>>"%REPAIR_HELPER%" echo.
+>>"%REPAIR_HELPER%" echo for base in list(locations):
+>>"%REPAIR_HELPER%" echo     for candidate in base.glob("pip*"):
+>>"%REPAIR_HELPER%" echo         name = candidate.name.lower()
+>>"%REPAIR_HELPER%" echo         if name == "pip" or name.startswith("pip-") or name.startswith("pip_"):
+>>"%REPAIR_HELPER%" echo             purge(candidate)
+>>"%REPAIR_HELPER%" echo.
+>>"%REPAIR_HELPER%" echo scripts = sysconfig.get_path("scripts")
+>>"%REPAIR_HELPER%" echo if scripts:
+>>"%REPAIR_HELPER%" echo     for candidate in pathlib.Path(scripts).glob("pip*"):
+>>"%REPAIR_HELPER%" echo         purge(candidate)
+>>"%REPAIR_HELPER%" echo.
+>>"%REPAIR_HELPER%" echo ensurepip.bootstrap(upgrade=True)
+"%REPAIR_PYTHON%" "%REPAIR_HELPER%"
+set "REPAIR_EXIT=%ERRORLEVEL%"
+del "%REPAIR_HELPER%" >nul 2>&1
+if not "%REPAIR_EXIT%" == "0" (
+    echo Warning: Failed to repair pip via ensurepip. Continuing with the existing version.
+    goto :EOF
+)
 "%REPAIR_PYTHON%" -m pip install --upgrade --force-reinstall pip^<25
 if errorlevel 1 (
     echo Warning: Pip upgrade still failing after repair. Continuing with the existing version.
