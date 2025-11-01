@@ -34,8 +34,16 @@ if exist "%REQUIREMENTS%" (
     echo Installing dependencies from "%REQUIREMENTS%"...
     "%PYTHON_EXE%" -m pip install --upgrade pip
     if errorlevel 1 (
-        echo Failed to upgrade pip.
-        exit /b 1
+        echo Warning: Failed to upgrade pip. Attempting to repair pip with ensurepip...
+        "%PYTHON_EXE%" -m ensurepip --upgrade
+        if errorlevel 1 (
+            echo Warning: Failed to repair pip via ensurepip. Continuing with the existing version.
+        ) else (
+            "%PYTHON_EXE%" -m pip install --upgrade pip
+            if errorlevel 1 (
+                echo Warning: Pip upgrade still failing after repair. Continuing with the existing version.
+            )
+        )
     )
 
     "%PYTHON_EXE%" -m pip install -r "%REQUIREMENTS%"

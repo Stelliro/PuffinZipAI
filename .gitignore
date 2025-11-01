@@ -162,3 +162,4 @@ benchmark_data/
 
 # Backup files
 *~
+/venv
