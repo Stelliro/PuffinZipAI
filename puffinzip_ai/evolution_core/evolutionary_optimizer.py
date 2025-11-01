@@ -22,7 +22,8 @@ except ImportError as e_core_init:
     PuffinZipAI = None
 
 from ..config import (
-    DEFAULT_POPULATION_SIZE, DEFAULT_NUM_GENERATIONS, DEFAULT_MUTATION_RATE, DEFAULT_ELITISM_COUNT,
+    DEFAULT_POPULATION_SIZE, INITIAL_POPULATION_SIZE, POPULATION_GROWTH_STEP, POPULATION_GROWTH_INTERVAL,
+    DEFAULT_NUM_GENERATIONS, DEFAULT_MUTATION_RATE, DEFAULT_ELITISM_COUNT,
     DEFAULT_SELECTION_STRATEGY, STAGNATION_GENERATIONS_THRESHOLD,
     DEFAULT_LEN_THRESHOLDS,
     MUTATION_RATE_BOOST_FACTOR, MUTATION_RATE_DECAY_FACTOR, EVOLUTIONARY_AI_LOG_FILENAME,
@@ -156,6 +157,9 @@ class EvolutionaryOptimizer:
         self.tuned_params = tuned_params if tuned_params is not None else {}
         self.config = {
             'DEFAULT_POPULATION_SIZE': DEFAULT_POPULATION_SIZE, 'DEFAULT_NUM_GENERATIONS': DEFAULT_NUM_GENERATIONS,
+            'INITIAL_POPULATION_SIZE': INITIAL_POPULATION_SIZE,
+            'POPULATION_GROWTH_STEP': POPULATION_GROWTH_STEP,
+            'POPULATION_GROWTH_INTERVAL': POPULATION_GROWTH_INTERVAL,
             'DEFAULT_ADDITIONAL_ELS_GENERATIONS': DEFAULT_ADDITIONAL_ELS_GENERATIONS,
             'DEFAULT_MUTATION_RATE': DEFAULT_MUTATION_RATE,
             'DEFAULT_ELITISM_COUNT': DEFAULT_ELITISM_COUNT, 'DEFAULT_SELECTION_STRATEGY': DEFAULT_SELECTION_STRATEGY,
@@ -203,8 +207,15 @@ class EvolutionaryOptimizer:
 
         self.default_elitism_count_from_config = elitism_count if elitism_count is not None else self.config_get(
             'DEFAULT_ELITISM_COUNT')
-        self.population_size = population_size if population_size is not None else self.config_get(
+        self.target_population_size = population_size if population_size is not None else self.config_get(
             'DEFAULT_POPULATION_SIZE')
+        configured_initial_population = self.config_get('INITIAL_POPULATION_SIZE', self.target_population_size)
+        self.initial_population_size = max(5, min(configured_initial_population, self.target_population_size))
+        configured_growth_step = self.config_get('POPULATION_GROWTH_STEP', max(1, self.target_population_size // 5))
+        self.population_growth_step = max(1, min(configured_growth_step, self.target_population_size))
+        configured_growth_interval = self.config_get('POPULATION_GROWTH_INTERVAL', 5)
+        self.population_growth_interval = max(1, configured_growth_interval)
+        self.population_size = self.initial_population_size
         self.initial_num_generations = num_generations if num_generations is not None else self.config_get(
             'DEFAULT_NUM_GENERATIONS')
         self.base_mutation_rate = mutation_rate if mutation_rate is not None else self.config_get(
@@ -658,6 +669,90 @@ class EvolutionaryOptimizer:
                 self.logger.error(f"Error creating/replacing immigrant: {e_imm}", exc_info=True)
         if replaced_count > 0: self.logger.info(f"Introduced {replaced_count} immigrants by replacement.")
 
+    def _create_growth_agents(self, additional_agents_needed: int, current_generation: int):
+        if additional_agents_needed <= 0 or self.gui_stop_event.is_set():
+            return []
+        new_agents = []
+        if self.population:
+            source_pool = list(self.population)
+            for idx in range(additional_agents_needed):
+                template_agent = random.choice(source_pool)
+                try:
+                    clone = template_agent.clone(
+                        new_agent_id=f"gen{current_generation}_growth{idx}",
+                        new_generation_born=current_generation
+                    )
+                except Exception as clone_exc:
+                    self.logger.warning(
+                        f"Growth clone failure (agent {template_agent.agent_id}): {clone_exc}. Creating random agent instead.")
+                    clone = None
+                if clone is not None:
+                    new_agents.append(clone)
+        if len(new_agents) < additional_agents_needed and PuffinZipAI:
+            deficit = additional_agents_needed - len(new_agents)
+            self.logger.info(f"Population growth using {deficit} brand new agents due to clone shortfall.")
+            for idx in range(deficit):
+                if self.gui_stop_event.is_set():
+                    break
+                num_thresholds = random.randint(self.config_get('MIN_THRESHOLDS_COUNT'),
+                                                max(self.config_get('MIN_THRESHOLDS_COUNT') + 1,
+                                                    self.config_get('MAX_THRESHOLDS_COUNT') + 1))
+                threshold_values = sorted(random.sample(range(3, 3000), num_thresholds))[:self.config_get('MAX_THRESHOLDS_COUNT')]
+                if not threshold_values:
+                    threshold_values = [random.randint(10, 200)]
+                rle_min_run_min = max(1, self.config_get('RLE_MIN_RUN_INIT_MIN') - 1)
+                rle_min_run_max = self.config_get('RLE_MIN_RUN_INIT_MAX') + 1
+                agent_params = {
+                    'len_thresholds': threshold_values,
+                    'learning_rate': random.uniform(0.0005, 0.4),
+                    'discount_factor': random.uniform(0.70, 0.9999),
+                    'exploration_rate': random.uniform(0.7, 1.0),
+                    'exploration_decay_rate': random.uniform(0.985, 0.99995),
+                    'min_exploration_rate': random.uniform(0.0001, 0.05),
+                    'rle_min_encodable_run': random.randint(rle_min_run_min, rle_min_run_max),
+                    'target_device': self.els_target_device
+                }
+                try:
+                    new_agents.append(
+                        EvolvingAgent(PuffinZipAI(**agent_params), generation_born=current_generation,
+                                      agent_id=f"gen{current_generation}_growth_new{idx}")
+                    )
+                except Exception as agent_exc:
+                    self.logger.error(f"Failed to create growth agent: {agent_exc}", exc_info=True)
+                    break
+        if new_agents:
+            try:
+                self._mutate_population(new_agents, current_generation + 1)
+            except Exception as mutate_exc:
+                self.logger.warning(f"Population growth mutation step failed: {mutate_exc}")
+        return new_agents
+
+    def _maybe_expand_population(self, current_generation_display: int):
+        if self.gui_stop_event.is_set():
+            return
+        if self.population_size >= self.target_population_size:
+            return
+        if self.population_growth_interval <= 0:
+            return
+        if current_generation_display <= 1:
+            return
+        if current_generation_display % self.population_growth_interval != 0:
+            return
+        remaining_capacity = self.target_population_size - self.population_size
+        additional_agents_needed = min(self.population_growth_step, remaining_capacity)
+        if additional_agents_needed <= 0:
+            return
+        new_agents = self._create_growth_agents(additional_agents_needed, current_generation_display)
+        if not new_agents:
+            self.logger.warning("Population growth triggered but no agents were created.")
+            return
+        self.population.extend(new_agents)
+        self.population_size += len(new_agents)
+        self.logger.info(
+            f"Population growth applied at generation {current_generation_display}. New size: {self.population_size}")
+        self._send_to_gui(
+            f"Population expanded to {self.population_size} subjects for richer compression strategies.")
+
     def _update_stagnation_and_mutation_rate(self, current_gen_num, best_fitness_this_gen):
         if self.gui_stop_event.is_set(): return
         if best_fitness_this_gen > self.best_fitness_overall:
@@ -796,6 +891,7 @@ class EvolutionaryOptimizer:
                 "Continuing evolution. Explicitly cleared stop event before this run segment.")
         else:
             target_num_generations_in_run = self.initial_num_generations;
+            self.population_size = self.initial_population_size
             run_title = f"--- ELS: New Run Started --- Pop: {self.population_size}, TargetGens: {target_num_generations_in_run}"
             self.population = self._create_initial_population()
             if self.gui_stop_event.is_set() or not self.population: self.logger.critical(
@@ -860,6 +956,8 @@ class EvolutionaryOptimizer:
 
                 if self.gui_stop_event.is_set(): self.logger.info(
                     f"ELS run stopping after pause/resume check Gen {current_gen_display}.");break
+
+                self._maybe_expand_population(current_gen_display)
 
                 current_avg_fitness = self._evaluate_population(self.population, current_absolute_gen_0_idx)
                 if self.gui_stop_event.is_set(): self.logger.info(

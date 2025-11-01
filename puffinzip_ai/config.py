@@ -39,7 +39,14 @@ CLI_MENU_LOG_FILENAME = 'puffin_cli_menu.log'
 CLI_RUNNER_LOG_FILENAME = 'puffin_cli_runner.log'
 GUI_RUNNER_LOG_FILENAME = 'puffin_gui_runner_status.log'
 
-DEFAULT_POPULATION_SIZE = 50 
+# Maximum target population size for extended searches
+DEFAULT_POPULATION_SIZE = 50
+# Smaller initial population to allow quick early feedback
+INITIAL_POPULATION_SIZE = 12
+# Additional agents introduced every few generations for broader coverage
+POPULATION_GROWTH_STEP = 8
+# Interval (in generations) between growth events
+POPULATION_GROWTH_INTERVAL = 5
 DEFAULT_NUM_GENERATIONS = 100 
 DEFAULT_ADDITIONAL_ELS_GENERATIONS = 30 
 DEFAULT_MUTATION_RATE = 0.15 
