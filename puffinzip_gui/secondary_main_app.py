@@ -177,6 +177,18 @@ def populate_evolution_controls_tab_content(app):  # Renamed from populate_evolu
                                      style="TButton", command=lambda: app.request_task_stop(), state=tk.DISABLED)
     app.stop_els_button.grid(row=1, column=2, padx=(5, 0), pady=5, sticky=tk.EW, ipady=5)
 
+    continuous_toggle_frame = ttk.Frame(pf, style="TFrame", padding=(5, 0, 5, 5))
+    continuous_toggle_frame.pack(fill=tk.X, pady=(0, 5))
+    app.els_continuous_mode_check = ttk.Checkbutton(
+        continuous_toggle_frame,
+        text="Infinite Generations (Continuous Run)",
+        variable=app.els_continuous_mode_var,
+        command=app.on_toggle_els_continuous_mode,
+        style="TCheckbutton")
+    app.els_continuous_mode_check.pack(anchor=tk.W)
+    if hasattr(app, '_sync_els_continuous_config'):
+        app._sync_els_continuous_config()
+
     utility_buttons_frame = ttk.Frame(pf, style="TFrame", padding=(0, 5, 0, 5));
     utility_buttons_frame.pack(fill=tk.X, pady=(5, 5))
     utility_buttons_frame.columnconfigure(0, weight=1);

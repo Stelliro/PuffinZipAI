@@ -157,6 +157,18 @@ class PuffinZipApp(tk.Tk):
         self.APP_VERSION = "PMA_FallbackVer_Init"
         self.app_target_device = CONFIG_TARGET_DEVICE_DEFAULT  # Initialize target device attribute
 
+        continuous_default = True
+        if settings_manager:
+            try:
+                cfg_values = settings_manager.get_config_values()
+                if isinstance(cfg_values, dict) and 'ELS_CONTINUOUS_RUN_ENABLED' in cfg_values:
+                    continuous_default = bool(cfg_values['ELS_CONTINUOUS_RUN_ENABLED'])
+            except Exception:
+                pass
+        self.els_continuous_mode_var = tk.BooleanVar(self, value=continuous_default)
+        if isinstance(self.tuned_params, dict) and 'ELS_CONTINUOUS_RUN_ENABLED' not in self.tuned_params:
+            self.tuned_params['ELS_CONTINUOUS_RUN_ENABLED'] = continuous_default
+
         try:
             self.APP_VERSION = CFG_APP_VERSION;
             self.gui_runner_log_path = os.path.join(LOGS_DIR_PATH, GUI_RUNNER_LOG_FILENAME)
@@ -922,6 +934,21 @@ class PuffinZipApp(tk.Tk):
                 except Exception as e_direct_call_final:
                     pass
 
+    def _sync_els_continuous_config(self):
+        desired = bool(self.els_continuous_mode_var.get()) if hasattr(self, 'els_continuous_mode_var') else True
+        if isinstance(self.tuned_params, dict):
+            self.tuned_params['ELS_CONTINUOUS_RUN_ENABLED'] = desired
+        if self.els_optimizer:
+            if hasattr(self.els_optimizer, 'config') and isinstance(self.els_optimizer.config, dict):
+                self.els_optimizer.config['ELS_CONTINUOUS_RUN_ENABLED'] = desired
+            if isinstance(getattr(self.els_optimizer, 'tuned_params', None), dict):
+                self.els_optimizer.tuned_params['ELS_CONTINUOUS_RUN_ENABLED'] = desired
+
+    def on_toggle_els_continuous_mode(self):
+        self._sync_els_continuous_config()
+        mode_label = "enabled" if self.els_continuous_mode_var.get() else "disabled"
+        self.log_message(f"ELS Info: Continuous generation mode {mode_label} for upcoming runs.")
+
     def _start_ai_task(self, actual_ai_method, *args, **kwargs):
         if self.task_running: self.log_message(
             "An AI task is already running. Please wait or stop the current task."); return
@@ -936,8 +963,11 @@ class PuffinZipApp(tk.Tk):
             self.els_run_completed = False
         self._update_els_button_states()
         if self.current_task_is_els:
-            self.els_fitness_history_data.clear();
-            self._update_els_chart([])
+            continue_method = getattr(self.els_optimizer, 'continue_evolution', None) if self.els_optimizer else None
+            is_continue_task = continue_method is not None and actual_ai_method == continue_method
+            if not is_continue_task:
+                self.els_fitness_history_data.clear()
+            self._update_els_chart(self.els_fitness_history_data)
             if hasattr(self, 'els_status_label') and hasattr(self.els_status_label,
                                                              'winfo_exists') and self.els_status_label.winfo_exists():
                 try:
@@ -1153,6 +1183,7 @@ class PuffinZipApp(tk.Tk):
                     f"ELS Error: Failed to initialize Evolutionary Optimizer: {e_reinit_els}");
                 self.els_optimizer = None;
                 return
+        self._sync_els_continuous_config()
         if self.task_running: self.log_message("ELS Error: Another AI task is already running."); return
         selected_bm_strategy = self.els_initial_benchmark_strategy_var.get();
         user_bm_size_mb_override = None;
@@ -1197,6 +1228,7 @@ class PuffinZipApp(tk.Tk):
         self.els_optimizer.initial_benchmark_target_size_mb = None;
         self.els_optimizer.initial_benchmark_fixed_complexity_name = None
         self.els_optimizer.els_target_device = self.app_target_device
+        self._sync_els_continuous_config()
         self._start_ai_task(self.els_optimizer.continue_evolution, additional_generations=None)
 
     def pause_els_task(self):
