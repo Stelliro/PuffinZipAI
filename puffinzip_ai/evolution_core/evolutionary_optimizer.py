@@ -298,25 +298,30 @@ class EvolutionaryOptimizer:
         else:
             self.logger.info(f"({log_level.upper()}) {str(message)}")
 
-    def _send_fitness_history_to_gui(self):
-        if self.gui_output_queue:
-            serializable_history = []
-            for entry in self.fitness_history_per_generation:
-                try:
-                    if isinstance(entry, (tuple, list)) and len(entry) == 5 and all(
-                            isinstance(x, (int, float, np.number)) for x in entry):
-                        serializable_history.append(
-                            (int(entry[0]), float(entry[1]), float(entry[2]), float(entry[3]), float(entry[4])))
-                    else:
-                        self.logger.warning(f"Invalid entry in fitness_history (expected 5-tuple): {entry}. Skipping.")
-                except (TypeError, ValueError) as e_ser:
-                    self.logger.warning(f"Error serializing fitness entry {entry}: {e_ser}. Skipping.")
-            history_str = repr(serializable_history);
-            stats_prefix = self.config_get('ELS_STATS_MSG_PREFIX', "[ELS_FITNESS_HISTORY]")
+    def get_serializable_fitness_history(self):
+        serializable_history = []
+        for entry in self.fitness_history_per_generation:
             try:
-                self.gui_output_queue.put_nowait(f"{stats_prefix} {history_str}")
-            except queue.Full:
-                self.logger.warning(f"{stats_prefix}: GUI stats queue full (fitness history).")
+                if isinstance(entry, (tuple, list)) and len(entry) == 5 and all(
+                        isinstance(x, (int, float, np.number)) for x in entry):
+                    serializable_history.append(
+                        (int(entry[0]), float(entry[1]), float(entry[2]), float(entry[3]), float(entry[4])))
+                else:
+                    self.logger.warning(f"Invalid entry in fitness_history (expected 5-tuple): {entry}. Skipping.")
+            except (TypeError, ValueError) as e_ser:
+                self.logger.warning(f"Error serializing fitness entry {entry}: {e_ser}. Skipping.")
+        return serializable_history
+
+    def _send_fitness_history_to_gui(self):
+        if not self.gui_output_queue:
+            return
+        serializable_history = self.get_serializable_fitness_history()
+        history_str = repr(serializable_history)
+        stats_prefix = self.config_get('ELS_STATS_MSG_PREFIX', "[ELS_FITNESS_HISTORY]")
+        try:
+            self.gui_output_queue.put_nowait(f"{stats_prefix} {history_str}")
+        except queue.Full:
+            self.logger.warning(f"{stats_prefix}: GUI stats queue full (fitness history).")
 
     def _pre_run_hardware_check(self) -> bool:
         """Checks if GPU is selected and if agents are correctly initialized for it."""
@@ -848,7 +853,7 @@ class EvolutionaryOptimizer:
             continuous_msg = "ELS continuous generation mode active: evolution will continue until a stop signal is received."
             self.logger.info(continuous_msg)
             self._send_to_gui(continuous_msg)
-        if not is_continuation: self._send_fitness_history_to_gui()
+        self._send_fitness_history_to_gui()
         completed_generations_this_segment = 0;
         if continuous_mode:
             target_total_gens_to_reach = float('inf')

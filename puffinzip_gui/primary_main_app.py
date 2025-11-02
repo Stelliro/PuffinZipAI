@@ -944,6 +944,30 @@ class PuffinZipApp(tk.Tk):
             if isinstance(getattr(self.els_optimizer, 'tuned_params', None), dict):
                 self.els_optimizer.tuned_params['ELS_CONTINUOUS_RUN_ENABLED'] = desired
 
+    def _rehydrate_els_history_from_optimizer(self):
+        if not self.els_optimizer:
+            return
+        history_source = None
+        try:
+            if hasattr(self.els_optimizer, 'get_serializable_fitness_history') and callable(
+                    self.els_optimizer.get_serializable_fitness_history):
+                history_source = self.els_optimizer.get_serializable_fitness_history()
+            else:
+                raw_history = getattr(self.els_optimizer, 'fitness_history_per_generation', None)
+                if isinstance(raw_history, list):
+                    history_source = []
+                    for entry in raw_history:
+                        if isinstance(entry, (tuple, list)) and len(entry) == 5:
+                            try:
+                                history_source.append(
+                                    (int(entry[0]), float(entry[1]), float(entry[2]), float(entry[3]), float(entry[4])))
+                            except (TypeError, ValueError):
+                                continue
+        except Exception:
+            history_source = None
+        if history_source is not None:
+            self.els_fitness_history_data = history_source
+
     def on_toggle_els_continuous_mode(self):
         self._sync_els_continuous_config()
         mode_label = "enabled" if self.els_continuous_mode_var.get() else "disabled"
@@ -1228,6 +1252,12 @@ class PuffinZipApp(tk.Tk):
         self.els_optimizer.initial_benchmark_target_size_mb = None;
         self.els_optimizer.initial_benchmark_fixed_complexity_name = None
         self.els_optimizer.els_target_device = self.app_target_device
+        self._rehydrate_els_history_from_optimizer()
+        if hasattr(self, 'gdv_tab_instance') and self.gdv_tab_instance:
+            try:
+                self.gdv_tab_instance.load_and_display_data()
+            except Exception:
+                pass
         self._sync_els_continuous_config()
         self._start_ai_task(self.els_optimizer.continue_evolution, additional_generations=None)
 
