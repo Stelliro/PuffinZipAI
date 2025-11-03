@@ -57,11 +57,13 @@ try:
         GPU_RLE_TARGET_VRAM_USAGE_FRACTION,
         GPU_RLE_WORKSPACE_MIN_MB,
         GPU_RLE_WORKSPACE_MAX_MB,
+        GPU_RLE_WORKSPACE_TARGET_MB,
     )
 except ImportError:
     GPU_RLE_TARGET_VRAM_USAGE_FRACTION = 0.0
     GPU_RLE_WORKSPACE_MIN_MB = 0
     GPU_RLE_WORKSPACE_MAX_MB = 0
+    GPU_RLE_WORKSPACE_TARGET_MB = 0
 
 
 try:
@@ -103,9 +105,10 @@ def _ensure_workspace_allocation(gpu_id: int, required_elements: int = 0) -> Opt
     if not CUPY_AVAILABLE:
         return None
 
-    target_fraction = float(max(0.0, min(0.98, GPU_RLE_TARGET_VRAM_USAGE_FRACTION)))
+    target_fraction = float(max(0.0, min(1.0, GPU_RLE_TARGET_VRAM_USAGE_FRACTION)))
     min_bytes_cfg = int(max(0, GPU_RLE_WORKSPACE_MIN_MB) * 1024 * 1024)
     max_bytes_cfg = int(max(0, GPU_RLE_WORKSPACE_MAX_MB) * 1024 * 1024) if GPU_RLE_WORKSPACE_MAX_MB else 0
+    target_bytes_cfg = int(max(0, GPU_RLE_WORKSPACE_TARGET_MB) * 1024 * 1024)
 
     with _GPU_WORKSPACE_LOCK:
         existing = _GPU_WORKSPACE_BUFFERS.get(gpu_id)
@@ -119,6 +122,8 @@ def _ensure_workspace_allocation(gpu_id: int, required_elements: int = 0) -> Opt
             return None
 
         target_bytes = int(total_mem_bytes * target_fraction) if total_mem_bytes > 0 else 0
+        if target_bytes_cfg > 0:
+            target_bytes = max(target_bytes, target_bytes_cfg)
         required_bytes = int(required_elements) * np.dtype(np.uint32).itemsize if required_elements else 0
         if required_bytes > 0:
             target_bytes = max(target_bytes, required_bytes)
@@ -126,6 +131,8 @@ def _ensure_workspace_allocation(gpu_id: int, required_elements: int = 0) -> Opt
             target_bytes = max(target_bytes, min_bytes_cfg)
         if max_bytes_cfg > 0:
             target_bytes = min(target_bytes, max_bytes_cfg)
+        if total_mem_bytes > 0:
+            target_bytes = min(target_bytes, total_mem_bytes)
 
         if target_bytes <= 0:
             if required_bytes > 0:
@@ -141,7 +148,11 @@ def _ensure_workspace_allocation(gpu_id: int, required_elements: int = 0) -> Opt
                 return existing
 
         attempt_elements = max(target_elements, required_elements)
-        min_elements_allowed = max(1, required_elements if required_elements else (min_bytes_cfg // np.dtype(np.uint32).itemsize if min_bytes_cfg else 1))
+        desired_allocation_bytes = target_bytes
+        min_elements_allowed = max(
+            1,
+            required_elements if required_elements else (min_bytes_cfg // np.dtype(np.uint32).itemsize if min_bytes_cfg else 1),
+        )
 
         while attempt_elements >= min_elements_allowed:
             try:
@@ -149,19 +160,28 @@ def _ensure_workspace_allocation(gpu_id: int, required_elements: int = 0) -> Opt
                 with _GPU_WORKSPACE_LOCK:
                     _GPU_WORKSPACE_BUFFERS[gpu_id] = workspace
                 logger.info(
-                    "GPU RLE reserved %.1f MB on device %s for workspace (elements=%d).",
+                    "GPU RLE reserved %.1f MB (requested %.1f MB) on device %s for workspace (elements=%d).",
                     workspace.nbytes / (1024 * 1024),
+                    desired_allocation_bytes / (1024 * 1024),
                     gpu_id,
                     workspace.size,
                 )
                 return workspace
             except CuPyOutOfMemoryError:
-                attempt_elements = int(max(min_elements_allowed, attempt_elements * 0.75))
+                next_attempt = int(attempt_elements * 0.75)
+                if next_attempt < min_elements_allowed:
+                    if attempt_elements == min_elements_allowed:
+                        break
+                    next_attempt = min_elements_allowed
+                if next_attempt == attempt_elements:
+                    break
+                attempt_elements = next_attempt
 
         logger.warning(
-            "GPU RLE could not reserve workspace on device %s (required_elements=%d).",
+            "GPU RLE could not reserve workspace on device %s (required_elements=%d, requested_bytes=%d).",
             gpu_id,
             required_elements,
+            desired_allocation_bytes,
         )
         with _GPU_WORKSPACE_LOCK:
             _GPU_WORKSPACE_BUFFERS.pop(gpu_id, None)
