@@ -1,6 +1,7 @@
 # PuffinZipAI_Project/puffinzip_ai/utils/hardware_detector.py
 import logging
 import platform
+import shutil
 import subprocess
 import re
 import traceback
@@ -69,6 +70,38 @@ if not logger.handlers:
     logger.setLevel(logging.INFO)
     logger.addHandler(logging.NullHandler())
 
+try:
+    NVCC_PATH = shutil.which("nvcc")
+    if NVCC_PATH:
+        NVCC_AVAILABLE = True
+        NVCC_VERSION_INFO = None
+        try:
+            nvcc_output = subprocess.check_output(
+                [NVCC_PATH, "--version"], text=True, timeout=5
+            )
+            if nvcc_output:
+                NVCC_VERSION_INFO = nvcc_output.strip()
+                logger.info(
+                    "Detected CUDA toolkit via nvcc at %s", NVCC_PATH
+                )
+        except Exception as nvcc_err:
+            logger.debug(
+                "nvcc detected at %s but querying the version failed: %s",
+                NVCC_PATH,
+                nvcc_err,
+            )
+            NVCC_VERSION_INFO = None
+    else:
+        NVCC_AVAILABLE = False
+        NVCC_VERSION_INFO = None
+except Exception as nvcc_init_err:
+    logger.debug(
+        "Error during nvcc availability check: %s", nvcc_init_err, exc_info=True
+    )
+    NVCC_PATH = None
+    NVCC_AVAILABLE = False
+    NVCC_VERSION_INFO = None
+
 def get_cpu_info():
     logger.debug("Detecting CPU info...")
     try:
@@ -126,7 +159,12 @@ def get_cpu_info():
         return "CPU (Detection Error)"
 
 def get_available_gpus_info():
-    logger.debug(f"Detecting GPU info... (CuPy available: {CUPY_AVAILABLE}, Numba CUDA available: {NUMBA_CUDA_AVAILABLE})")
+    logger.debug(
+        "Detecting GPU info... (CuPy available: %s, Numba CUDA available: %s, nvcc available: %s)",
+        CUPY_AVAILABLE,
+        NUMBA_CUDA_AVAILABLE,
+        NVCC_AVAILABLE,
+    )
     gpus = []
     if CUPY_AVAILABLE:
         try:
@@ -187,7 +225,13 @@ def get_available_gpus_info():
 
 
     if not gpus:
-        logger.info("No CUDA-capable GPUs detected by CuPy or Numba.")
+        if NVCC_AVAILABLE:
+            logger.info(
+                "No CUDA-capable GPUs detected by CuPy or Numba, but nvcc is present."
+                " The CUDA toolkit appears installed; GPU libraries may need installation or configuration."
+            )
+        else:
+            logger.info("No CUDA-capable GPUs detected by CuPy or Numba.")
     return gpus
 
 def get_processing_device_options():
