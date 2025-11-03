@@ -146,6 +146,21 @@ except ImportError as e_mu_composite_direct:
 
 
 class EvolutionaryOptimizer:
+    @staticmethod
+    def _coerce_bool(value, default=False):
+        if isinstance(value, bool):
+            return value
+        if value is None:
+            return False if default is False else default
+        if isinstance(value, (int, np.integer)):
+            return value != 0
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized in {"1", "true", "yes", "on"}:
+                return True
+            if normalized in {"0", "false", "no", "off", ""}:
+                return False
+        return bool(value) if value is not None else bool(default)
     def __init__(self, population_size=None, num_generations=None, mutation_rate=None, elitism_count=None,
                  gui_output_queue=None, gui_stop_event=None, benchmark_items=None, benchmark_path=None,
                  tuned_params=None, dynamic_benchmarking_active: bool = None,
@@ -182,7 +197,7 @@ class EvolutionaryOptimizer:
             'DYNAMIC_BENCHMARK_REFRESH_INTERVAL_GENS': CONFIG_DYNAMIC_BENCH_REFRESH,
             'INITIAL_BENCHMARK_COMPLEXITY_LEVEL': CONFIG_INITIAL_BENCH_COMPLEXITY,
             'ACCELERATION_TARGET_DEVICE': CONFIG_ACCELERATION_TARGET_DEVICE,
-            'ELS_CONTINUOUS_RUN_ENABLED': ELS_CONTINUOUS_RUN_ENABLED,
+            'ELS_CONTINUOUS_RUN_ENABLED': self._coerce_bool(ELS_CONTINUOUS_RUN_ENABLED),
         }
         self.els_target_device = target_device if target_device is not None else self.config_get(
             'ACCELERATION_TARGET_DEVICE')
@@ -200,6 +215,9 @@ class EvolutionaryOptimizer:
         self.initial_benchmark_target_size_mb = initial_benchmark_target_size_mb
         self.initial_benchmark_fixed_complexity_name = initial_benchmark_fixed_complexity_name
         self.initial_benchmark_complexity_config_default = self.config_get('INITIAL_BENCHMARK_COMPLEXITY_LEVEL')
+        self._continuous_run_enabled = self._coerce_bool(
+            self.config_get('ELS_CONTINUOUS_RUN_ENABLED', False)
+        )
 
         self.logger.info(
             f"EvolutionaryOptimizer initializing. DynamicBM: {self.dynamic_benchmarking_active} (Refresh: {self.benchmark_refresh_interval_gens} gens). InitBenchSizeMB: {self.initial_benchmark_target_size_mb}, InitBenchComplex: '{self.initial_benchmark_fixed_complexity_name}'. ELS AI Agents TargetDevice: '{self.els_target_device}'")
@@ -259,6 +277,22 @@ class EvolutionaryOptimizer:
 
     def config_get(self, key, default_val=None):
         return self.config.get(key, default_val)
+
+    def set_continuous_run_enabled(self, enabled):
+        coerced = self._coerce_bool(enabled, self._continuous_run_enabled)
+        self._continuous_run_enabled = coerced
+        self.config['ELS_CONTINUOUS_RUN_ENABLED'] = coerced
+        if isinstance(self.tuned_params, dict):
+            self.tuned_params['ELS_CONTINUOUS_RUN_ENABLED'] = coerced
+
+    def _resolve_continuous_mode(self):
+        continuous_mode = self._continuous_run_enabled
+        config_value = self.config_get('ELS_CONTINUOUS_RUN_ENABLED', continuous_mode)
+        continuous_mode = self._coerce_bool(config_value, continuous_mode)
+        if isinstance(self.tuned_params, dict) and 'ELS_CONTINUOUS_RUN_ENABLED' in self.tuned_params:
+            continuous_mode = self._coerce_bool(self.tuned_params['ELS_CONTINUOUS_RUN_ENABLED'], continuous_mode)
+        self._continuous_run_enabled = continuous_mode
+        return continuous_mode
 
     def clear_pause_resume_events(self):
         self.pause_event.clear()
@@ -831,12 +865,7 @@ class EvolutionaryOptimizer:
             if self.gui_stop_event.is_set(): self.logger.info(
                 "ELS setup for new run stopped (post-benchmark refresh).");return
 
-        continuous_mode = bool(self.config_get('ELS_CONTINUOUS_RUN_ENABLED', False))
-        if isinstance(self.tuned_params, dict) and 'ELS_CONTINUOUS_RUN_ENABLED' in self.tuned_params:
-            try:
-                continuous_mode = bool(self.tuned_params['ELS_CONTINUOUS_RUN_ENABLED'])
-            except Exception:
-                self.logger.warning("Invalid tuned parameter for ELS_CONTINUOUS_RUN_ENABLED; using config default.")
+        continuous_mode = self._resolve_continuous_mode()
 
         if continuous_mode:
             run_title = f"{run_title} [Continuous Mode]"

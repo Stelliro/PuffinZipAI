@@ -147,6 +147,22 @@ ELS_LOG_PREFIX = CFG_ELS_LOG_PREFIX;
 
 
 class PuffinZipApp(tk.Tk):
+    @staticmethod
+    def _coerce_bool(value, default=True):
+        if isinstance(value, bool):
+            return value
+        if value is None:
+            return default
+        if isinstance(value, (int, np.integer)):
+            return value != 0
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized in {"1", "true", "yes", "on"}:
+                return True
+            if normalized in {"0", "false", "no", "off", ""}:
+                return False
+        return bool(value)
+
     def __init__(self, *args, **kwargs):
         tuned_params = kwargs.pop('tuned_params', None)
         super().__init__(*args, **kwargs)
@@ -162,10 +178,10 @@ class PuffinZipApp(tk.Tk):
             try:
                 cfg_values = settings_manager.get_config_values()
                 if isinstance(cfg_values, dict) and 'ELS_CONTINUOUS_RUN_ENABLED' in cfg_values:
-                    continuous_default = bool(cfg_values['ELS_CONTINUOUS_RUN_ENABLED'])
+                    continuous_default = self._coerce_bool(cfg_values['ELS_CONTINUOUS_RUN_ENABLED'], True)
             except Exception:
                 pass
-        self.els_continuous_mode_var = tk.BooleanVar(self, value=continuous_default)
+        self.els_continuous_mode_var = tk.BooleanVar(self, value=bool(continuous_default))
         if isinstance(self.tuned_params, dict) and 'ELS_CONTINUOUS_RUN_ENABLED' not in self.tuned_params:
             self.tuned_params['ELS_CONTINUOUS_RUN_ENABLED'] = continuous_default
 
@@ -935,14 +951,21 @@ class PuffinZipApp(tk.Tk):
                     pass
 
     def _sync_els_continuous_config(self):
-        desired = bool(self.els_continuous_mode_var.get()) if hasattr(self, 'els_continuous_mode_var') else True
+        desired_raw = self.els_continuous_mode_var.get() if hasattr(self, 'els_continuous_mode_var') else True
+        desired = self._coerce_bool(desired_raw, True)
         if isinstance(self.tuned_params, dict):
             self.tuned_params['ELS_CONTINUOUS_RUN_ENABLED'] = desired
         if self.els_optimizer:
-            if hasattr(self.els_optimizer, 'config') and isinstance(self.els_optimizer.config, dict):
-                self.els_optimizer.config['ELS_CONTINUOUS_RUN_ENABLED'] = desired
-            if isinstance(getattr(self.els_optimizer, 'tuned_params', None), dict):
-                self.els_optimizer.tuned_params['ELS_CONTINUOUS_RUN_ENABLED'] = desired
+            if hasattr(self.els_optimizer, 'set_continuous_run_enabled'):
+                try:
+                    self.els_optimizer.set_continuous_run_enabled(desired)
+                except Exception:
+                    pass
+            else:
+                if hasattr(self.els_optimizer, 'config') and isinstance(self.els_optimizer.config, dict):
+                    self.els_optimizer.config['ELS_CONTINUOUS_RUN_ENABLED'] = desired
+                if isinstance(getattr(self.els_optimizer, 'tuned_params', None), dict):
+                    self.els_optimizer.tuned_params['ELS_CONTINUOUS_RUN_ENABLED'] = desired
 
     def _rehydrate_els_history_from_optimizer(self):
         if not self.els_optimizer:
