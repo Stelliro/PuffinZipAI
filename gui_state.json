@@ -1,3 +1,6 @@
 {
-    "main_window_geometry": "1250x1008+1116+187"
+    "main_window_geometry": "1250x1008+1116+187",
+    "target_device": "CPU",
+    "generations": 100,
+    "population_size": 50
 }

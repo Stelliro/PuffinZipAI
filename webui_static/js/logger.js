@@ -138,12 +138,12 @@ document.addEventListener('DOMContentLoaded', function() {
     if (refreshIntervalInput) {
         refreshIntervalInput.addEventListener('change', function(e) {
             logRefreshInterval = parseInt(e.target.value) || 1000;
-            restartLogPolling();
+    // startLogPolling(); // STOPPED: Prevent immediate firing on page load
         });
     }
     
     // Start polling logs
-    startLogPolling();
+    // startLogPolling(); // STOPPED: Prevent immediate firing on page load
 });
 
 function startLogPolling() {
@@ -182,7 +182,7 @@ function restartLogPolling() {
     if (logPollingTime) {
         clearInterval(logPollingTime);
     }
-    startLogPolling();
+    // startLogPolling(); // STOPPED: Prevent immediate firing on page load
 }
 
 // Export logs as JSON

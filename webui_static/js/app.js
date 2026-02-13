@@ -1,4 +1,6 @@
-/* ============================================================================
+
+    
+    /* ============================================================================
    App.js - Main Application Logic
    ============================================================================ */
 
@@ -17,7 +19,8 @@ class PuffinZipAIApp {
         this.loadSavedTheme();
         this.setupEventListeners();
         this.loadCompressionMethods();
-        this.startStatusPolling();
+        // Polling slowed and delayed to prevent startup spam
+        setTimeout(() => this.startStatusPolling(), 2000);
         this.initializeControlStates();
     }
     
@@ -657,7 +660,7 @@ class PuffinZipAIApp {
         document.getElementById('refresh-interval').value = refreshInterval;
         
         // Check if training was in progress, and resume polling if so
-        this.checkAndResumeTraining();
+        // this.checkAndResumeTraining(); // Disabled to stop auto-firing on page load
     }
     
     async checkAndResumeTraining() {
