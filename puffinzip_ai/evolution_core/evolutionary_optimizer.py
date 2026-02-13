@@ -10,6 +10,7 @@ import traceback
 import numpy as np
 import importlib
 import pickle
+from typing import List, Dict, Optional, Tuple
 
 try:
     from ..gpu_core.gpu_ai_agent import cp
@@ -19,7 +20,6 @@ except ImportError:
 try:
     from .. import PuffinZipAI
 except ImportError as e_core_init:
-
     PuffinZipAI = None
 
 from ..config import (
@@ -45,6 +45,8 @@ from ..config import (
     ELS_CONTINUOUS_RUN_ENABLED,
 )
 from ..logger import setup_logger
+from ..compression_benchmark import CompressionBenchmark
+from ..checkpoint_manager import CheckpointManager, CompressionScoreCalculator
 
 BenchmarkItemEvaluator = None;
 DEFAULT_BENCHMARK_REPETITIONS = 1;
@@ -59,10 +61,8 @@ try:
 except ModuleNotFoundError:
     pass
 except ImportError as e_be:
-
     pass
 except Exception as e_other_be:
-
     pass
 
 EvolvingAgent = None
@@ -71,7 +71,6 @@ try:
 
     EvolvingAgent = EA_temp
 except ImportError as e_ia:
-
     raise
 
 
@@ -86,7 +85,6 @@ def _placeholder_selection_method(error_message_detail, *args, **kwargs):
 try:
     from .selection_methods import tournament_selection, roulette_wheel_selection, rank_selection
 except ImportError as e_sm:
-
     def tournament_selection(*args, **kwargs):
         return _placeholder_selection_method(f"tournament_selection not loaded: {e_sm}", *args, **kwargs)
 
@@ -101,7 +99,6 @@ except ImportError as e_sm:
 try:
     from .crossover_methods import apply_crossover as advanced_crossover_pipeline
 except ImportError as e_co_real:
-
     def advanced_crossover_pipeline(*args, **kwargs):
         parent1_ai = kwargs.get('parent1_ai', args[0] if args else None);
         parent2_ai = kwargs.get('parent2_ai', args[1] if len(args) > 1 else None)
@@ -121,7 +118,6 @@ try:
     apply_hypermutation_func = apply_hypermutation
 
 except ImportError as e_mu_composite_direct:
-
     try:
         mutation_methods_module = importlib.import_module("puffinzip_ai.evolution_core.mutation_methods")
         apply_mutations_func = getattr(mutation_methods_module, 'apply_mutations', None)
@@ -131,9 +127,7 @@ except ImportError as e_mu_composite_direct:
         else:
             raise ImportError("Functions not found in dynamically imported mutation_methods module.")
     except Exception as e_mu_composite_dynamic:
-
         def apply_mutations_placeholder(agent, rate_config_dict):
-
             return False
 
 
@@ -161,6 +155,7 @@ class EvolutionaryOptimizer:
             if normalized in {"0", "false", "no", "off", ""}:
                 return False
         return bool(value) if value is not None else bool(default)
+
     def __init__(self, population_size=None, num_generations=None, mutation_rate=None, elitism_count=None,
                  gui_output_queue=None, gui_stop_event=None, benchmark_items=None, benchmark_path=None,
                  tuned_params=None, dynamic_benchmarking_active: bool = None,
@@ -222,6 +217,12 @@ class EvolutionaryOptimizer:
         self.logger.info(
             f"EvolutionaryOptimizer initializing. DynamicBM: {self.dynamic_benchmarking_active} (Refresh: {self.benchmark_refresh_interval_gens} gens). InitBenchSizeMB: {self.initial_benchmark_target_size_mb}, InitBenchComplex: '{self.initial_benchmark_fixed_complexity_name}'. ELS AI Agents TargetDevice: '{self.els_target_device}'")
 
+        # Log tuned parameters for performance optimization transparency
+        if isinstance(self.tuned_params, dict) and self.tuned_params:
+            self.logger.info(f"Tuned Parameters (Performance Throttling): {self.tuned_params}")
+        else:
+            self.logger.info("Tuned Parameters: None or empty. Default throttling will be applied.")
+
         self.default_elitism_count_from_config = elitism_count if elitism_count is not None else self.config_get(
             'DEFAULT_ELITISM_COUNT')
         self.population_size = population_size if population_size is not None else self.config_get(
@@ -246,6 +247,18 @@ class EvolutionaryOptimizer:
         self.total_generations_elapsed = 0;
         self.seeded_champion_configs = [];
         self.population = []
+        
+        # Compression benchmarking
+        self.compression_benchmark = CompressionBenchmark(logger=self.logger)
+        self.success_validation_done = False
+        self.success_validation_result = None
+        
+        # Checkpoint management
+        self.checkpoint_manager = CheckpointManager(
+            checkpoint_dir=os.path.join(os.path.dirname(LOGS_DIR_PATH), "checkpoints"),
+            logger=self.logger
+        )
+        self.current_benchmark_dataset_size = 0  # Track benchmark dataset size for display
 
         actual_static_benchmark_path = benchmark_path or BENCHMARK_DATASET_PATH or GENERATED_BENCHMARK_DEFAULT_PATH
         if BenchmarkItemEvaluator is not None:
@@ -271,6 +284,9 @@ class EvolutionaryOptimizer:
             elif self.dynamic_benchmarking_active and not self.benchmark_evaluator.benchmark_items:
                 self.logger.info(
                     "Dynamic benchmarking enabled. Items will be generated by _maybe_refresh_dynamic_benchmarks using ELS preferences.")
+            
+            # Track benchmark dataset size
+            self._update_benchmark_dataset_size()
         else:
             self.logger.error("BenchmarkItemEvaluator class not available. ELS evaluation cannot proceed.");
             self.benchmark_evaluator = None
@@ -324,9 +340,13 @@ class EvolutionaryOptimizer:
             try:
                 self.gui_output_queue.put_nowait(formatted_message)
             except queue.Full:
-                self.logger.warning(f"{log_prefix}: GUI queue full: {str(message)[:100]}")
+                # Log locally but don't choke
+                # self.logger.warning(f"{log_prefix}: GUI queue full: {str(message)[:100]}")
+                pass
         else:
             print(formatted_message)
+
+        # Also log to file
         if hasattr(self.logger, log_level):
             getattr(self.logger, log_level)(str(message))
         else:
@@ -345,6 +365,14 @@ class EvolutionaryOptimizer:
             except (TypeError, ValueError) as e_ser:
                 self.logger.warning(f"Error serializing fitness entry {entry}: {e_ser}. Skipping.")
         return serializable_history
+
+    def _update_benchmark_dataset_size(self):
+        """Update the current benchmark dataset size for display."""
+        if self.benchmark_evaluator and hasattr(self.benchmark_evaluator, 'get_total_benchmark_size_bytes'):
+            try:
+                self.current_benchmark_dataset_size = self.benchmark_evaluator.get_total_benchmark_size_bytes()
+            except Exception as e:
+                self.logger.warning(f"Error getting benchmark dataset size: {e}")
 
     def _send_fitness_history_to_gui(self):
         if not self.gui_output_queue:
@@ -373,11 +401,9 @@ class EvolutionaryOptimizer:
             if not hasattr(agent, 'puffin_ai') or not agent.puffin_ai:
                 self._send_to_gui(f"FATAL ELS PRE-CHECK: Agent {agent.agent_id} has no AI core.", "critical")
                 return False
-            
+
             ai = agent.puffin_ai
-            # `use_gpu_acceleration` is the definitive flag set by the agent's __init__
             if not getattr(ai, 'use_gpu_acceleration', False):
-                # The agent itself determined it cannot run on GPU, despite the ELS target
                 msg = f"FATAL ELS PRE-CHECK: ELS target is '{self.els_target_device}', but agent '{agent.agent_id}' has disabled GPU acceleration due to an internal error (e.g., failed CuPy health check). See agent logs for details."
                 self.logger.critical(msg)
                 self._send_to_gui(msg, "critical")
@@ -419,7 +445,8 @@ class EvolutionaryOptimizer:
                     if core_ai.use_gpu_acceleration and hasattr(core_ai,
                                                                 'q_table_gpu') and core_ai.q_table_gpu is not None and cp is not None:
                         if core_ai.q_table_gpu.shape == champ_config['q_table'].shape:
-                            core_ai.q_table_gpu = cp.asarray(champ_config['q_table']); core_ai.q_table = np.copy(
+                            core_ai.q_table_gpu = cp.asarray(champ_config['q_table']);
+                            core_ai.q_table = np.copy(
                                 champ_config['q_table'])
                         else:
                             self.logger.warning(
@@ -440,18 +467,24 @@ class EvolutionaryOptimizer:
             f"Added {num_seeded} champion(s) to initial population.");self.seeded_champion_configs.clear()
         num_random_to_create = self.population_size - len(current_population)
         if num_random_to_create > 0: self._send_to_gui(
-            f"Generating {num_random_to_create} random agents (with increased variance)...")
+            f"Generating {num_random_to_create} random agents...")
+
         rle_min_run_init_min_wide = max(1, self.config_get('RLE_MIN_RUN_INIT_MIN') - 1);
         rle_min_run_init_max_wide = self.config_get('RLE_MIN_RUN_INIT_MAX') + 1
+
+        # Optimized random creation loop
         for i in range(num_random_to_create):
             if self.gui_stop_event.is_set(): self.logger.info("Population creation (random gen) interrupted."); break
             try:
                 num_thresholds_to_gen = random.randint(self.config_get('MIN_THRESHOLDS_COUNT'),
                                                        self.config_get('MAX_THRESHOLDS_COUNT') + 2)
+                # Faster threshold gen
                 threshold_values = sorted(random.sample(range(3, 3000), num_thresholds_to_gen))[
                                    :self.config_get('MAX_THRESHOLDS_COUNT')]
                 if not threshold_values: threshold_values = [random.randint(10, 200)]
-                ai_init_params_rand = {'len_thresholds': threshold_values, 'learning_rate': random.uniform(0.0005, 0.4),
+
+                ai_init_params_rand = {'len_thresholds': threshold_values,
+                                       'learning_rate': random.uniform(0.0005, 0.4),
                                        'discount_factor': random.uniform(0.70, 0.9999),
                                        'exploration_rate': random.uniform(0.8, 1.0),
                                        'exploration_decay_rate': random.uniform(0.985, 0.99995),
@@ -464,6 +497,7 @@ class EvolutionaryOptimizer:
                     EvolvingAgent(puffin_ai_instance=core_ai_rand, generation_born=0, agent_id=f"gen0_rand_{i}"))
             except Exception as e_rand_agent:
                 self.logger.error(f"Error creating random agent {i}: {e_rand_agent}", exc_info=True)
+
         self.population = current_population;
         self.logger.info(
             f"Initial population of {len(self.population)} agents created. Agent hardware target: '{self.els_target_device}'");
@@ -478,6 +512,7 @@ class EvolutionaryOptimizer:
         avg_fitness_this_gen_val = float('-inf');
         worst_fitness_this_gen = float('inf');
         median_fitness_this_gen = float('-inf')
+
         if not self.benchmark_evaluator:
             self.logger.error("Cannot eval pop: BenchmarkItemEvaluator N/A.");
             self._send_to_gui(f"Gen {generation_num + 1}: CRITICAL ERROR - Benchmark system N/A.", "error");
@@ -488,21 +523,29 @@ class EvolutionaryOptimizer:
                                                                                     gui_stop_event=self.gui_stop_event)
             if self.gui_stop_event.is_set(): self.logger.info(
                 f"Gen {generation_num + 1} Evaluation INTERRUPTED by GUI after batch call."); return float('-inf')
-            if len(evaluation_results) != len(population_to_evaluate): self.logger.error(
-                f"Mismatch: Got {len(evaluation_results)} eval results for {len(population_to_evaluate)} agents.")
+
+            if len(evaluation_results) != len(population_to_evaluate):
+                self.logger.error(
+                    f"Mismatch: Got {len(evaluation_results)} eval results for {len(population_to_evaluate)} agents.")
+
             valid_fitness_scores = []
             for i, agent in enumerate(population_to_evaluate):
                 if self.gui_stop_event.is_set(): break
                 fitness = float('-inf')
-                if i < len(evaluation_results): fitness, stats_dict = evaluation_results[i]; agent.set_fitness(
-                    fitness); agent.evaluation_stats = stats_dict
+                if i < len(evaluation_results):
+                    fitness, stats_dict = evaluation_results[i]
+                    agent.set_fitness(fitness)
+                    agent.evaluation_stats = stats_dict
+
                 if isinstance(fitness, (int, float)) and fitness != float('-inf') and np.isfinite(fitness):
                     valid_fitness_scores.append(fitness)
                 else:
-                    agent.set_fitness(float('-inf')); agent.evaluation_stats = {}
+                    agent.set_fitness(float('-inf'))
+                    agent.evaluation_stats = {}
 
-            if self.gui_stop_event.is_set(): self.logger.info(
-                f"Gen {generation_num + 1} Evaluation INTERRUPTED during fitness assignment."); return float('-inf')
+            if self.gui_stop_event.is_set():
+                self.logger.info(f"Gen {generation_num + 1} Evaluation INTERRUPTED during fitness assignment.")
+                return float('-inf')
 
             population_to_evaluate.sort(key=lambda ag: ag.get_fitness(), reverse=True)
             if population_to_evaluate:
@@ -511,30 +554,41 @@ class EvolutionaryOptimizer:
                     best_agent_this_gen.get_fitness()) else float('-inf')
                 worst_fitness_this_gen = population_to_evaluate[-1].get_fitness() if np.isfinite(
                     population_to_evaluate[-1].get_fitness()) else float('inf')
+
                 if valid_fitness_scores:
                     avg_fitness_this_gen_val = sum(valid_fitness_scores) / len(valid_fitness_scores);
                     median_fitness_this_gen = np.median(valid_fitness_scores)
                 else:
-                    avg_fitness_this_gen_val = float('-inf'); median_fitness_this_gen = float('-inf')
+                    avg_fitness_this_gen_val = float('-inf');
+                    median_fitness_this_gen = float('-inf')
+
                 if not np.isfinite(best_fitness_this_gen): best_fitness_this_gen = float('-inf')
                 if not np.isfinite(worst_fitness_this_gen): worst_fitness_this_gen = float('-inf')
-                if hasattr(best_agent_this_gen,
-                           'evaluation_stats') and best_agent_this_gen.evaluation_stats: stats_str = self._format_eval_stats(
-                    best_agent_this_gen.evaluation_stats);self.logger.info(
-                    f"Gen {generation_num + 1} Best Agent ({best_agent_this_gen.agent_id}) Stats: {stats_str}")
+
+                if hasattr(best_agent_this_gen, 'evaluation_stats') and best_agent_this_gen.evaluation_stats:
+                    stats_str = self._format_eval_stats(best_agent_this_gen.evaluation_stats)
+                    self.logger.info(
+                        f"Gen {generation_num + 1} Best Agent ({best_agent_this_gen.agent_id}) Stats: {stats_str}")
             else:
-                worst_fitness_this_gen = float('-inf'); median_fitness_this_gen = float('-inf')
+                worst_fitness_this_gen = float('-inf');
+                median_fitness_this_gen = float('-inf')
             if not np.isfinite(median_fitness_this_gen): median_fitness_this_gen = float('-inf')
+
         self.logger.info(
             f"Gen {generation_num + 1} eval complete. Best: {best_fitness_this_gen:.4f}, Avg: {avg_fitness_this_gen_val:.4f}, Median: {median_fitness_this_gen:.4f}, Worst: {worst_fitness_this_gen:.4f}");
         self._send_to_gui(
             f"Gen {generation_num + 1}: Eval Done. Best: {best_fitness_this_gen:.4f}, Avg: {avg_fitness_this_gen_val:.4f}, Median: {median_fitness_this_gen:.4f}, Worst: {worst_fitness_this_gen:.4f}")
+
         self.fitness_history_per_generation.append(
             (generation_num, best_fitness_this_gen, avg_fitness_this_gen_val, worst_fitness_this_gen,
              median_fitness_this_gen));
         self.average_fitness_overall_history.append(avg_fitness_this_gen_val)
+
         if not self.gui_stop_event.is_set():
-            self._send_fitness_history_to_gui();
+            # Throttle GUI history updates if generation count is high to prevent lag
+            if len(self.fitness_history_per_generation) < 100 or generation_num % 5 == 0:
+                self._send_fitness_history_to_gui()
+
         return avg_fitness_this_gen_val
 
     def _format_eval_stats(self, stats_dict: dict) -> str:
@@ -578,11 +632,13 @@ class EvolutionaryOptimizer:
                 parents = rank_selection(sorted_population, k_for_selection)
             else:
                 self.logger.warning(
-                    f"Unknown selection '{sel_method_name}', using tournament."); parents = tournament_selection(
+                    f"Unknown selection '{sel_method_name}', using tournament.");
+                parents = tournament_selection(
                     sorted_population, k_for_selection, tournament_size=max(2, min(3, len(sorted_population))))
         except Exception as e_sel:
             self.logger.error(f"Error during parent selection '{sel_method_name}': {e_sel}",
-                              exc_info=True); parents = sorted_population[:k_for_selection]
+                              exc_info=True);
+            parents = sorted_population[:k_for_selection]
         if not parents and sorted_population: self.logger.warning(
             "Parent selection empty, fallback random.choices."); parents = random.choices(sorted_population,
                                                                                           k=k_for_selection)
@@ -623,7 +679,9 @@ class EvolutionaryOptimizer:
                                                                        self.logger, self.config)
             except Exception as e_co:
                 self.logger.error(f"Error during crossover: {e_co}",
-                                  exc_info=True); child1_core = parent1.puffin_ai.clone_core_model(); child2_core = parent2.puffin_ai.clone_core_model()
+                                  exc_info=True);
+                child1_core = parent1.puffin_ai.clone_core_model();
+                child2_core = parent2.puffin_ai.clone_core_model()
             if child1_core: next_gen_offspring.append(
                 EvolvingAgent(child1_core, agent_id=f"gen{current_generation_num + 1}_c{offspring_created_count}",
                               generation_born=current_generation_num + 1,
@@ -785,7 +843,8 @@ class EvolutionaryOptimizer:
         message = f"Applying {strategy_name.title()} Adaptation Strategy (Gen {self.total_generations_elapsed + 1}):"
         is_gpu_target = "GPU" in self.els_target_device.upper()
         if is_gpu_target:
-            message += f"\n  (ELS Target Device: '{self.els_target_device}' - GPU parameters placeholder)"; self.logger.info(
+            message += f"\n  (ELS Target Device: '{self.els_target_device}' - GPU parameters placeholder)";
+            self.logger.info(
                 f"Adaptation strategy '{strategy_name}' applying with GPU target '{self.els_target_device}'. Current logic uses same params as CPU.")
         else:
             message += f"\n  (ELS Target Device: '{self.els_target_device}' - CPU parameters apply)"
@@ -809,7 +868,8 @@ class EvolutionaryOptimizer:
             message += f"\n  - Mutation rate set to: {self.current_mutation_rate:.4f} until Gen ~{self.hypermutation_active_until_gen + 1}";
             message += f"\n  - Elitism count adjusted: {original_elitism_count} -> {self.elitism_count}"
         else:
-            self._send_to_gui(f"Unknown adaptation strategy: {strategy_name}", "warning");return
+            self._send_to_gui(f"Unknown adaptation strategy: {strategy_name}", "warning");
+            return
         self.logger.info(message.replace("\n  - ", " | "));
         self._send_to_gui(message)
 
@@ -946,6 +1006,11 @@ class EvolutionaryOptimizer:
                                                           self.population[0].get_fitness() if self.population and
                                                                                               self.population[
                                                                                                   0] else float('-inf'))
+                
+                # CHECKPOINT: Validation test at generation 50
+                if current_gen_display == 50 and not self.success_validation_done:
+                    self._run_success_validation()
+                
                 if self.gui_stop_event.is_set(): break
                 next_gen_population = []
                 if self.elitism_count > 0 and self.population: elites = [
@@ -1023,7 +1088,8 @@ class EvolutionaryOptimizer:
 
         except Exception as e_evo_loop:
             self.logger.error(f"Exception in ELS main loop Gen {self.total_generations_elapsed + 1}: {e_evo_loop}",
-                              exc_info=True); self._send_to_gui(
+                              exc_info=True);
+            self._send_to_gui(
                 f"ERROR in ELS main loop Gen {self.total_generations_elapsed + 1}: {e_evo_loop}", "error")
         finally:
             self.total_generations_elapsed = start_gen_0_idx + completed_generations_this_segment
@@ -1043,7 +1109,8 @@ class EvolutionaryOptimizer:
                     f"Best Agent Eval Summary: {stats_summary}"); self._send_to_gui(
                     f"Best Agent Eval Summary: {stats_summary}")
             else:
-                self.logger.warning("No best agent recorded for this segment."); self._send_to_gui(
+                self.logger.warning("No best agent recorded for this segment.");
+                self._send_to_gui(
                     f"{final_message.split('---')[1].strip()} No best agent recorded. ---", "warning")
 
             if self.gui_stop_event and self.gui_stop_event.is_set(): self.logger.info(
@@ -1075,7 +1142,7 @@ class EvolutionaryOptimizer:
             self.logger.warning("Attempted to save ELS state, but population is empty. Nothing saved.")
             self._send_to_gui("Warning: ELS state not saved, population is empty.", "warning")
             return False
-        
+
         try:
             state = {
                 'population': self.population,
@@ -1094,10 +1161,10 @@ class EvolutionaryOptimizer:
             dir_name = os.path.dirname(filepath)
             if dir_name:
                 os.makedirs(dir_name, exist_ok=True)
-            
+
             with open(filepath, 'wb') as f:
                 pickle.dump(state, f)
-                
+
             msg = f"ELS state saved to '{os.path.basename(filepath)}'. (Gen: {self.total_generations_elapsed}, Pop: {len(self.population)})"
             self.logger.info(msg)
             self._send_to_gui(msg, "info")
@@ -1115,9 +1182,9 @@ class EvolutionaryOptimizer:
                 state = pickle.load(f)
 
             if not isinstance(state, dict) or state.get('version_info') != 'PuffinZip_ELS_State_v1.0':
-                 self.logger.error(f"File '{filepath}' is not a valid ELS state file or has an incompatible version.")
-                 self._send_to_gui("Error: Invalid ELS state file.", "error")
-                 return False
+                self.logger.error(f"File '{filepath}' is not a valid ELS state file or has an incompatible version.")
+                self._send_to_gui("Error: Invalid ELS state file.", "error")
+                return False
 
             self.population = state.get('population', [])
             self.total_generations_elapsed = state.get('total_generations_elapsed', 0)
@@ -1159,7 +1226,122 @@ class EvolutionaryOptimizer:
             self._send_to_gui(msg, "error")
             return False
 
-    def save_best_agent(self, filepath):
+    def save_checkpoint(self, checkpoint_name: str) -> bool:
+        """
+        Save a checkpoint with enhanced metadata using CheckpointManager.
+        
+        Args:
+            checkpoint_name: Name for this checkpoint
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        if not self.population:
+            self.logger.warning(f"Attempted to save checkpoint '{checkpoint_name}', but population is empty.")
+            self._send_to_gui(f"Warning: Checkpoint '{checkpoint_name}' not saved, population is empty.", "warning")
+            return False
+        
+        # Calculate average fitness
+        avg_fitness = float(np.mean([agent.fitness for agent in self.population if hasattr(agent, 'fitness')]))
+        
+        # Create optimizer state for checkpoint
+        optimizer_state = {
+            'population': self.population,
+            'total_generations_elapsed': self.total_generations_elapsed,
+            'best_agent_overall': self.best_agent_overall,
+            'best_fitness_overall': self.best_fitness_overall,
+            'fitness_history_per_generation': self.fitness_history_per_generation,
+            'average_fitness_overall_history': self.average_fitness_overall_history,
+            'stagnation_counter': self.stagnation_counter,
+            'last_best_fitness_improvement_gen': self.last_best_fitness_improvement_gen,
+            'hypermutation_active_until_gen': self.hypermutation_active_until_gen,
+            'current_mutation_rate': self.current_mutation_rate,
+            'version_info': 'PuffinZip_ELS_State_v1.0'
+        }
+        
+        # Save checkpoint with metadata
+        success = self.checkpoint_manager.save_checkpoint(
+            checkpoint_name=checkpoint_name,
+            optimizer_state=optimizer_state,
+            best_fitness=self.best_fitness_overall,
+            avg_fitness=avg_fitness,
+            generation=self.total_generations_elapsed,
+            dataset_size=self.current_benchmark_dataset_size,
+            dataset_name=getattr(self.benchmark_evaluator, 'benchmark_dataset_path', 'Dynamic'),
+            population_size=len(self.population)
+        )
+        
+        if success:
+            checkpoint_meta = self.checkpoint_manager.get_checkpoint_metadata(
+                f"{checkpoint_name}_{self.checkpoint_manager.checkpoints_metadata[list(self.checkpoint_manager.checkpoints_metadata.keys())[-1]].timestamp}"
+            )
+            msg = f"✅ Checkpoint '{checkpoint_name}' saved. Gen: {self.total_generations_elapsed}, " \
+                  f"Fitness: {self.best_fitness_overall:.4f}, Score: {checkpoint_meta.compression_score:.2f}"
+            self._send_to_gui(msg, "success")
+        
+        return success
+
+    def load_checkpoint(self, checkpoint_key: str) -> bool:
+        """
+        Load a checkpoint by key and restore optimizer state.
+        
+        Args:
+            checkpoint_key: Key from checkpoint manager
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        success, optimizer_state = self.checkpoint_manager.load_checkpoint(checkpoint_key)
+        
+        if not success or optimizer_state is None:
+            self.logger.error(f"Failed to load checkpoint '{checkpoint_key}'.")
+            self._send_to_gui(f"Error loading checkpoint '{checkpoint_key}'.", "error")
+            return False
+        
+        try:
+            # Restore state
+            self.population = optimizer_state.get('population', [])
+            self.total_generations_elapsed = optimizer_state.get('total_generations_elapsed', 0)
+            self.best_agent_overall = optimizer_state.get('best_agent_overall', None)
+            self.best_fitness_overall = optimizer_state.get('best_fitness_overall', float('-inf'))
+            self.fitness_history_per_generation = optimizer_state.get('fitness_history_per_generation', [])
+            self.average_fitness_overall_history = optimizer_state.get('average_fitness_overall_history', [])
+            self.stagnation_counter = optimizer_state.get('stagnation_counter', 0)
+            self.last_best_fitness_improvement_gen = optimizer_state.get('last_best_fitness_improvement_gen', 0)
+            self.hypermutation_active_until_gen = optimizer_state.get('hypermutation_active_until_gen', 0)
+            self.current_mutation_rate = optimizer_state.get('current_mutation_rate', self.base_mutation_rate)
+            
+            # Configure all agents for current GUI session
+            for agent in self.population:
+                if agent and hasattr(agent, 'puffin_ai') and agent.puffin_ai:
+                    agent.puffin_ai.gui_output_queue = self.gui_output_queue
+                    agent.puffin_ai.gui_stop_event = self.gui_stop_event
+            
+            self.clear_pause_resume_events()
+            self._send_fitness_history_to_gui()
+            
+            meta = self.checkpoint_manager.get_checkpoint_metadata(checkpoint_key)
+            msg = f"✅ Checkpoint '{meta.name}' loaded. Resuming from Gen {self.total_generations_elapsed + 1}, " \
+                  f"Fitness: {self.best_fitness_overall:.4f}, Score: {meta.compression_score:.2f}"
+            self._send_to_gui(msg, "success")
+            
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"Error restoring checkpoint state: {e}", exc_info=True)
+            self._send_to_gui(f"Error restoring checkpoint: {e}", "error")
+            return False
+
+    def get_checkpoints_list(self) -> List[Dict]:
+        """Get list of all available checkpoints."""
+        return self.checkpoint_manager.list_checkpoints()
+
+    def compare_checkpoints(self, checkpoint_key1: str, checkpoint_key2: str) -> Optional[Dict]:
+        """Compare two checkpoints."""
+        return self.checkpoint_manager.compare_checkpoints(checkpoint_key1, checkpoint_key2)
+
+    def best_agent(self, filepath):
+
         if self.best_agent_overall and hasattr(self.best_agent_overall.puffin_ai, 'get_config_dict'):
             puffin_ai_to_save = self.best_agent_overall.puffin_ai
             model_data_to_save = puffin_ai_to_save.get_config_dict()
@@ -1181,7 +1363,78 @@ class EvolutionaryOptimizer:
                     "info")
             except Exception as e_save:
                 self.logger.error(f"Failed to save best agent to '{filepath}': {e_save}",
-                                  exc_info=True); self._send_to_gui(f"Error saving champion: {e_save}", "error")
+                                  exc_info=True);
+                self._send_to_gui(f"Error saving champion: {e_save}", "error")
         else:
-            self.logger.warning("No best agent or PuffinZipAI malformed."); self._send_to_gui(
+            self.logger.warning("No best agent or PuffinZipAI malformed.");
+            self._send_to_gui(
                 "No best agent to save or agent's AI core not configured.", "warning")
+
+    def _run_success_validation(self):
+        """
+        Validate AI compression success at generation 50.
+        Compares best AI compression to baseline (LZMA, gzip, bz2, zlib).
+        """
+        if self.success_validation_done:
+            return
+        
+        self.success_validation_done = True
+        
+        try:
+            # Get test data from benchmark evaluator
+            if not self.benchmark_evaluator or not self.benchmark_evaluator.benchmark_items:
+                self.logger.warning("Cannot validate success: No benchmark data available.")
+                self._send_to_gui("⚠️ Success Check Skipped: No benchmark data available.", "warning")
+                return
+            
+            # Use the first benchmark item for consistent comparison
+            test_item = self.benchmark_evaluator.benchmark_items[0]
+            test_data = test_item['data'] if isinstance(test_item, dict) else test_item
+            
+            if isinstance(test_data, str):
+                test_data = test_data.encode('utf-8')
+            
+            # Get the best AI agent and compress the test data
+            if not self.best_agent_overall:
+                self.logger.warning("Cannot validate: No best agent available.")
+                self._send_to_gui("⚠️ Success Check Skipped: No best agent available.", "warning")
+                return
+            
+            best_ai = self.best_agent_overall.puffin_ai
+            
+            # Compress with best AI
+            try:
+                ai_compressed = best_ai.compress_data(test_data)
+                if isinstance(ai_compressed, tuple):
+                    ai_compressed = ai_compressed[0]  # Handle (data, metadata) tuple
+            except Exception as e:
+                self.logger.error(f"Failed to compress with AI: {e}", exc_info=True)
+                self._send_to_gui(f"❌ Success Check Failed: AI compression error - {e}", "error")
+                return
+            
+            # Compare against baseline methods
+            success, comparison = self.compression_benchmark.validate_ai_success(
+                test_data, 
+                ai_compressed
+            )
+            
+            self.success_validation_result = comparison
+            
+            # Log and report results
+            report = self.compression_benchmark.format_comparison_report(comparison)
+            self.logger.info(f"\n{'='*70}\n{report}\n{'='*70}")
+            
+            # Send to GUI
+            status_emoji = "✅" if success else "❌"
+            summary = (
+                f"{status_emoji} Gen 50 Success Check:\n"
+                f"{report}\n"
+                f"Data: {comparison['original_size']:,} bytes → "
+                f"AI: {comparison['ai_compressed_size']:,} bytes vs "
+                f"{comparison['baseline_method']}: {comparison['baseline_compressed_size']:,} bytes"
+            )
+            self._send_to_gui(summary, "success" if success else "warning")
+            
+        except Exception as e:
+            self.logger.error(f"Error during success validation: {e}", exc_info=True)
+            self._send_to_gui(f"❌ Success Check Error: {e}", "error")

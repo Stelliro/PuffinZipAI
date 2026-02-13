@@ -154,6 +154,14 @@ def _ensure_workspace_allocation(gpu_id: int, required_elements: int = 0) -> Opt
             required_elements if required_elements else (min_bytes_cfg // np.dtype(np.uint32).itemsize if min_bytes_cfg else 1),
         )
 
+        logger.info(
+            "GPU RLE workspace allocation started on device %s: Total GPU VRAM=%.1f MB, Target Fraction=%.1f%%, Target Allocation=%.1f MB",
+            gpu_id,
+            total_mem_bytes / (1024 * 1024) if total_mem_bytes > 0 else 0,
+            target_fraction * 100,
+            desired_allocation_bytes / (1024 * 1024),
+        )
+
         while attempt_elements >= min_elements_allowed:
             try:
                 workspace = cp.empty(int(attempt_elements), dtype=cp.uint32)
@@ -168,7 +176,7 @@ def _ensure_workspace_allocation(gpu_id: int, required_elements: int = 0) -> Opt
                 )
                 return workspace
             except CuPyOutOfMemoryError:
-                next_attempt = int(attempt_elements * 0.75)
+                next_attempt = int(attempt_elements * 0.90)
                 if next_attempt < min_elements_allowed:
                     if attempt_elements == min_elements_allowed:
                         break

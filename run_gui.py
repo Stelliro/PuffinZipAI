@@ -75,10 +75,10 @@ finally:
     _default_throttles_fallback = {
         "AGENTS_PER_THROTTLE_CHECK": 5,
         "ITEMS_PER_THROTTLE_CHECK": 10,
-        "THROTTLE_SLEEP_DURATION_BENCH_EVAL": 0.001,
+        "THROTTLE_SLEEP_DURATION_BENCH_EVAL": 0.0005,
         "RLE_THROTTLE_RUN_LENGTH_THRESHOLD": 2 * 1024 * 1024,
         "RLE_THROTTLE_CHUNK_SIZE": 512 * 1024,
-        "RLE_THROTTLE_SLEEP_DURATION": 0.001,
+        "RLE_THROTTLE_SLEEP_DURATION": 0.0005,
     }
     if not _tuner_successful:
         TUNED_THROTTLE_PARAMS = _default_throttles_fallback.copy()

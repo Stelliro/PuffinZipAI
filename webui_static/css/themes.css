@@ -1,0 +1,405 @@
+/**
+ * PuffinZipAI Cross-Compatible Theme System
+ * Shared between old GUI and web UI
+ * Themes support both interfaces seamlessly
+ */
+
+/* ============================================================================
+   Theme Variables & Root Configuration
+   ============================================================================ */
+
+:root {
+    /* Default Theme (Nordic Dark) - matches old GUI */
+    --theme-bg: #2E3440;
+    --theme-fg: #ECEFF4;
+    --theme-frame: #3B4252;
+    --theme-accent: #88C0D0;
+    --theme-input: #434C5E;
+    --theme-textarea: #2E3440;
+    --theme-button-bg: #4C566A;
+    --theme-button-fg: #ECEFF4;
+    --theme-error: #BF616A;
+    
+    /* Prototype Enhancement - Tech feel */
+    --glow-color: rgba(136, 192, 208, 0.3);
+    --border-accent: rgba(136, 192, 208, 0.5);
+    --scanline-color: rgba(0, 0, 0, 0.1);
+}
+
+/* Dracula Theme */
+body.theme-dracula {
+    --theme-bg: #282a36;
+    --theme-fg: #f8f8f2;
+    --theme-frame: #44475a;
+    --theme-accent: #bd93f9;
+    --theme-input: #44475a;
+    --theme-textarea: #282a36;
+    --theme-button-bg: #6272a4;
+    --theme-button-fg: #f8f8f2;
+    --theme-error: #ff5555;
+    --glow-color: rgba(189, 147, 249, 0.3);
+    --border-accent: rgba(189, 147, 249, 0.5);
+}
+
+/* Solarized Light Theme */
+body.theme-solarized-light {
+    --theme-bg: #fdf6e3;
+    --theme-fg: #657b83;
+    --theme-frame: #eee8d5;
+    --theme-accent: #268bd2;
+    --theme-input: #eee8d5;
+    --theme-textarea: #fdf6e3;
+    --theme-button-bg: #93a1a1;
+    --theme-button-fg: #002b36;
+    --theme-error: #dc322f;
+    --glow-color: rgba(38, 139, 210, 0.2);
+    --border-accent: rgba(38, 139, 210, 0.4);
+}
+
+/* Monokai Pro Theme */
+body.theme-monokai {
+    --theme-bg: #2D2A2E;
+    --theme-fg: #FCFCFA;
+    --theme-frame: #403E41;
+    --theme-accent: #FFD866;
+    --theme-input: #403E41;
+    --theme-textarea: #221F22;
+    --theme-button-bg: #727072;
+    --theme-button-fg: #FCFCFA;
+    --theme-error: #FF6188;
+    --glow-color: rgba(255, 216, 102, 0.3);
+    --border-accent: rgba(255, 216, 102, 0.5);
+}
+
+/* Oceanic Next Theme */
+body.theme-oceanic {
+    --theme-bg: #1B2B34;
+    --theme-fg: #CDD3DE;
+    --theme-frame: #24343D;
+    --theme-accent: #6699CC;
+    --theme-input: #2E3F4A;
+    --theme-textarea: #1B2B34;
+    --theme-button-bg: #4F6470;
+    --theme-button-fg: #CDD3DE;
+    --theme-error: #EC5f67;
+    --glow-color: rgba(102, 153, 204, 0.3);
+    --border-accent: rgba(102, 153, 204, 0.5);
+}
+
+/* GitHub Dark Theme */
+body.theme-github-dark {
+    --theme-bg: #0d1117;
+    --theme-fg: #c9d1d9;
+    --theme-frame: #161b22;
+    --theme-accent: #58a6ff;
+    --theme-input: #0d1117;
+    --theme-textarea: #010409;
+    --theme-button-bg: #21262d;
+    --theme-button-fg: #c9d1d9;
+    --theme-error: #f85149;
+    --glow-color: rgba(88, 166, 255, 0.3);
+    --border-accent: rgba(88, 166, 255, 0.5);
+}
+
+/* Zenburn Theme */
+body.theme-zenburn {
+    --theme-bg: #3F3F3F;
+    --theme-fg: #DCDCCC;
+    --theme-frame: #4F4F4F;
+    --theme-accent: #7F9F7F;
+    --theme-input: #4F4F4F;
+    --theme-textarea: #3F3F3F;
+    --theme-button-bg: #6F6F6F;
+    --theme-button-fg: #DCDCCC;
+    --theme-error: #CC9393;
+    --glow-color: rgba(127, 159, 127, 0.3);
+    --border-accent: rgba(127, 159, 127, 0.5);
+}
+
+/* Material Darker Theme */
+body.theme-material {
+    --theme-bg: #212121;
+    --theme-fg: #EEFFFF;
+    --theme-frame: #303030;
+    --theme-accent: #82AAFF;
+    --theme-input: #37474F;
+    --theme-textarea: #212121;
+    --theme-button-bg: #546E7A;
+    --theme-button-fg: #EEFFFF;
+    --theme-error: #FF5252;
+    --glow-color: rgba(130, 170, 255, 0.3);
+    --border-accent: rgba(130, 170, 255, 0.5);
+}
+
+/* Gruvbox Dark Theme */
+body.theme-gruvbox {
+    --theme-bg: #282828;
+    --theme-fg: #ebdbb2;
+    --theme-frame: #3c3836;
+    --theme-accent: #fabd2f;
+    --theme-input: #504945;
+    --theme-textarea: #1d2021;
+    --theme-button-bg: #665c54;
+    --theme-button-fg: #ebdbb2;
+    --theme-error: #fb4934;
+    --glow-color: rgba(250, 189, 47, 0.3);
+    --border-accent: rgba(250, 189, 47, 0.5);
+}
+
+/* Tomorrow Night Blue Theme */
+body.theme-tomorrow-blue {
+    --theme-bg: #002451;
+    --theme-fg: #FFFFFF;
+    --theme-frame: #00346E;
+    --theme-accent: #519ABA;
+    --theme-input: #003F8A;
+    --theme-textarea: #002451;
+    --theme-button-bg: #0053B3;
+    --theme-button-fg: #FFFFFF;
+    --theme-error: #FF7575;
+    --glow-color: rgba(81, 154, 186, 0.3);
+    --border-accent: rgba(81, 154, 186, 0.5);
+}
+
+/* Forest Green Theme */
+body.theme-forest-green {
+    --theme-bg: #1E352F;
+    --theme-fg: #C1D7C0;
+    --theme-frame: #2A4B42;
+    --theme-accent: #5FAD56;
+    --theme-input: #335C4A;
+    --theme-textarea: #1E352F;
+    --theme-button-bg: #4B8F5A;
+    --theme-button-fg: #E0F0DE;
+    --theme-error: #EF6C64;
+    --glow-color: rgba(95, 173, 86, 0.3);
+    --border-accent: rgba(95, 173, 86, 0.5);
+}
+
+/* Crimson Night Theme */
+body.theme-crimson {
+    --theme-bg: #3B0E17;
+    --theme-fg: #FADBD8;
+    --theme-frame: #5C1723;
+    --theme-accent: #E74C3C;
+    --theme-input: #7A2E3D;
+    --theme-textarea: #3B0E17;
+    --theme-button-bg: #A93226;
+    --theme-button-fg: #FDEDEC;
+    --theme-error: #FF9E9A;
+    --glow-color: rgba(231, 76, 60, 0.3);
+    --border-accent: rgba(231, 76, 60, 0.5);
+}
+
+/* Electric Blue Theme */
+body.theme-electric-blue {
+    --theme-bg: #0A1931;
+    --theme-fg: #E6F1FF;
+    --theme-frame: #183A5D;
+    --theme-accent: #00BFFF;
+    --theme-input: #27496D;
+    --theme-textarea: #0A1931;
+    --theme-button-bg: #1385D8;
+    --theme-button-fg: #E6F1FF;
+    --theme-error: #FF6B6B;
+    --glow-color: rgba(0, 191, 255, 0.4);
+    --border-accent: rgba(0, 191, 255, 0.6);
+}
+
+/* Golden Sand Theme */
+body.theme-golden-sand {
+    --theme-bg: #F4E9D8;
+    --theme-fg: #785E48;
+    --theme-frame: #E9DAC7;
+    --theme-accent: #D4A276;
+    --theme-input: #DFCAAD;
+    --theme-textarea: #F4E9D8;
+    --theme-button-bg: #B9926B;
+    --theme-button-fg: #543D2B;
+    --theme-error: #C0392B;
+    --glow-color: rgba(212, 162, 118, 0.2);
+    --border-accent: rgba(212, 162, 118, 0.4);
+}
+
+/* Neon Glow Theme */
+body.theme-neon-glow {
+    --theme-bg: #100C08;
+    --theme-fg: #F0F0F0;
+    --theme-frame: #2A2015;
+    --theme-accent: #FF00FF;
+    --theme-input: #3A3025;
+    --theme-textarea: #100C08;
+    --theme-button-bg: #D900D9;
+    --theme-button-fg: #100C08;
+    --theme-error: #00FFFF;
+    --glow-color: rgba(255, 0, 255, 0.4);
+    --border-accent: rgba(255, 0, 255, 0.6);
+}
+
+/* Matrix Green Theme */
+body.theme-matrix-green {
+    --theme-bg: #020F00;
+    --theme-fg: #39FF14;
+    --theme-frame: #041F00;
+    --theme-accent: #00FF00;
+    --theme-input: #0A3A00;
+    --theme-textarea: #020F00;
+    --theme-button-bg: #0F5100;
+    --theme-button-fg: #39FF14;
+    --theme-error: #90EE90;
+    --glow-color: rgba(57, 255, 20, 0.4);
+    --border-accent: rgba(0, 255, 0, 0.6);
+}
+
+/* Sunset Orange Theme */
+body.theme-sunset-orange {
+    --theme-bg: #2C1E32;
+    --theme-fg: #FDD5B7;
+    --theme-frame: #4A2D53;
+    --theme-accent: #FF8C00;
+    --theme-input: #6F427C;
+    --theme-textarea: #2C1E32;
+    --theme-button-bg: #D96E00;
+    --theme-button-fg: #FFF0E1;
+    --theme-error: #FFB366;
+    --glow-color: rgba(255, 140, 0, 0.3);
+    --border-accent: rgba(255, 140, 0, 0.5);
+}
+
+/* Lavender Dream Theme */
+body.theme-lavender {
+    --theme-bg: #E6E0F8;
+    --theme-fg: #5D5478;
+    --theme-frame: #D1C4E9;
+    --theme-accent: #9575CD;
+    --theme-input: #B39DDB;
+    --theme-textarea: #E6E0F8;
+    --theme-button-bg: #7E57C2;
+    --theme-button-fg: #F8F5FF;
+    --theme-error: #EF5350;
+    --glow-color: rgba(149, 117, 205, 0.2);
+    --border-accent: rgba(149, 117, 205, 0.4);
+}
+
+/* Paper White Theme */
+body.theme-paper-white {
+    --theme-bg: #FFFFFF;
+    --theme-fg: #212121;
+    --theme-frame: #F5F5F5;
+    --theme-accent: #007BFF;
+    --theme-input: #EEEEEE;
+    --theme-textarea: #FFFFFF;
+    --theme-button-bg: #E0E0E0;
+    --theme-button-fg: #212121;
+    --theme-error: #D32F2F;
+    --glow-color: rgba(0, 123, 255, 0.15);
+    --border-accent: rgba(0, 123, 255, 0.3);
+}
+
+/* Coffee House Theme */
+body.theme-coffee {
+    --theme-bg: #3E2723;
+    --theme-fg: #D7CCC8;
+    --theme-frame: #4E342E;
+    --theme-accent: #A1887F;
+    --theme-input: #5D4037;
+    --theme-textarea: #3E2723;
+    --theme-button-bg: #795548;
+    --theme-button-fg: #EFEBE9;
+    --theme-error: #FFAB91;
+    --glow-color: rgba(161, 136, 127, 0.3);
+    --border-accent: rgba(161, 136, 127, 0.5);
+}
+
+/* ============================================================================
+   Prototype Aesthetic - Applied globally for tech feel
+   ============================================================================ */
+
+body {
+    background-color: var(--theme-bg);
+    color: var(--theme-fg);
+    background-image: 
+        repeating-linear-gradient(
+            0deg,
+            var(--scanline-color) 0px,
+            var(--scanline-color) 1px,
+            transparent 1px,
+            transparent 2px
+        );
+}
+
+/* Glowing border effect for elements */
+.card,
+.graph-section,
+.status-card,
+.method-card,
+.log-container,
+.btn-primary,
+input[type="number"],
+input[type="text"],
+select {
+    box-shadow: inset 0 0 0 1px var(--border-accent), 
+                0 0 10px var(--glow-color);
+    transition: all 200ms ease;
+}
+
+/* Enhanced glow on hover */
+.card:hover,
+.status-card:hover,
+.method-card:hover,
+.btn-primary:hover {
+    box-shadow: inset 0 0 0 1px var(--theme-accent),
+                0 0 20px var(--glow-color),
+                0 0 30px var(--glow-color);
+}
+
+/* Tech grid pattern background for sections */
+.graph-wrapper,
+.log-container {
+    background-image: 
+        linear-gradient(0deg, transparent 24%, rgba(255,0,0,.05) 25%, rgba(255,0,0,.05) 26%, transparent 27%, transparent 74%, rgba(255,0,0,.05) 75%, rgba(255,0,0,.05) 76%, transparent 77%, transparent),
+        linear-gradient(90deg, transparent 24%, rgba(255,0,0,.05) 25%, rgba(255,0,0,.05) 26%, transparent 27%, transparent 74%, rgba(255,0,0,.05) 75%, rgba(255,0,0,.05) 76%, transparent 77%, transparent);
+    background-size: 50px 50px;
+}
+
+/* Tech-forward button styling */
+.btn-primary {
+    position: relative;
+    font-weight: 700;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    border: 2px solid var(--theme-accent);
+    background: linear-gradient(135deg, var(--theme-accent), var(--theme-accent)) padding-box,
+                linear-gradient(135deg, var(--glow-color), transparent) border-box;
+}
+
+.btn-primary:hover {
+    text-shadow: 0 0 10px var(--glow-color);
+}
+
+/* Data visualization accent */
+.status-value {
+    text-shadow: 0 0 10px var(--glow-color);
+    font-family: 'Courier New', monospace;
+}
+
+.log-message {
+    font-family: 'Courier New', monospace;
+    letter-spacing: 0.5px;
+}
+
+/* Active glow for training indicator */
+.status-indicator.training {
+    box-shadow: 0 0 15px var(--theme-accent),
+                0 0 25px var(--glow-color);
+}
+
+/* Form input enhancement */
+input:focus,
+select:focus,
+textarea:focus {
+    outline: none;
+    box-shadow: inset 0 0 0 2px var(--theme-accent),
+                0 0 20px var(--glow-color);
+    border-color: var(--theme-accent);
+}

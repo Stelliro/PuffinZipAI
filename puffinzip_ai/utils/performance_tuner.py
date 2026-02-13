@@ -12,31 +12,31 @@ if not tuner_logger.handlers:
     tuner_logger.addHandler(logging.NullHandler())
 
 DEFAULT_TUNABLE_PARAMS = {
-    "AGENTS_PER_THROTTLE_CHECK": 5,
-    "ITEMS_PER_THROTTLE_CHECK": 10,
-    "THROTTLE_SLEEP_DURATION_BENCH_EVAL": 0.001,
+    "AGENTS_PER_THROTTLE_CHECK": 10,
+    "ITEMS_PER_THROTTLE_CHECK": 20,
+    "THROTTLE_SLEEP_DURATION_BENCH_EVAL": 0.0001,
     "RLE_THROTTLE_RUN_LENGTH_THRESHOLD": 2 * 1024 * 1024,
     "RLE_THROTTLE_CHUNK_SIZE": 512 * 1024,
-    "RLE_THROTTLE_SLEEP_DURATION": 0.001,
+    "RLE_THROTTLE_SLEEP_DURATION": 0.0001,
 }
 
 PERFORMANCE_TIERS = {
     "LOW_END": {
-        "AGENTS_PER_THROTTLE_CHECK": 1,
-        "ITEMS_PER_THROTTLE_CHECK": 3,
-        "THROTTLE_SLEEP_DURATION_BENCH_EVAL": 0.002,
+        "AGENTS_PER_THROTTLE_CHECK": 3,
+        "ITEMS_PER_THROTTLE_CHECK": 5,
+        "THROTTLE_SLEEP_DURATION_BENCH_EVAL": 0.0005,
         "RLE_THROTTLE_RUN_LENGTH_THRESHOLD": 1 * 1024 * 1024,
         "RLE_THROTTLE_CHUNK_SIZE": 128 * 1024,
-        "RLE_THROTTLE_SLEEP_DURATION": 0.002,
+        "RLE_THROTTLE_SLEEP_DURATION": 0.0005,
     },
     "BALANCED": DEFAULT_TUNABLE_PARAMS.copy(),
     "HIGH_END": {
         "AGENTS_PER_THROTTLE_CHECK": 10,
-        "ITEMS_PER_THROTTLE_CHECK": 15,
-        "THROTTLE_SLEEP_DURATION_BENCH_EVAL": 0.0005,
+        "ITEMS_PER_THROTTLE_CHECK": 20,
+        "THROTTLE_SLEEP_DURATION_BENCH_EVAL": 0.0001,
         "RLE_THROTTLE_RUN_LENGTH_THRESHOLD": 8 * 1024 * 1024,
         "RLE_THROTTLE_CHUNK_SIZE": 1 * 1024 * 1024,
-        "RLE_THROTTLE_SLEEP_DURATION": 0.0005,
+        "RLE_THROTTLE_SLEEP_DURATION": 0.0001,
     }
 }
 
@@ -75,27 +75,41 @@ def suggest_performance_tier() -> str:
         specs = get_system_specs()
         cpu_cores = specs.get("cpu_cores_physical", 1)
         ram_gb = specs.get("total_ram_gb", 4)
+        cpu_logical = specs.get("cpu_cores_logical", 1)
 
         tier = "BALANCED"
-        if benchmark_duration > 0.8:
-            tier = "LOW_END"
-        elif benchmark_duration < 0.25:
-            if cpu_cores >= 8 and ram_gb >= 16:
+        
+        # Improved tier selection logic with better thresholds
+        # Hardware-first approach combined with benchmark data
+        if cpu_cores >= 8 and ram_gb >= 16:
+            # High-end hardware - use HIGH_END tier unless benchmark indicates severe issues
+            if benchmark_duration > 1.5:
+                tier = "BALANCED"  # Still reasonable performance
+            else:
                 tier = "HIGH_END"
-            elif cpu_cores >= 4 and ram_gb >= 8:
+        elif cpu_cores >= 6 and ram_gb >= 8:
+            # Mid-to-high spec - prefer BALANCED or HIGH_END
+            if benchmark_duration > 1.2:
+                tier = "BALANCED"
+            elif benchmark_duration < 0.4:
                 tier = "HIGH_END"
             else:
                 tier = "BALANCED"
-        elif benchmark_duration < 0.5:
-            if cpu_cores >= 6 and ram_gb >= 8:
-                tier = "BALANCED"
-            else:
+        elif cpu_cores >= 4 and ram_gb >= 6:
+            # Mid-spec system - BALANCED or LOW_END
+            if benchmark_duration > 1.0:
                 tier = "LOW_END"
+            else:
+                tier = "BALANCED"
         else:
-            if cpu_cores < 4 or ram_gb < 6: tier = "LOW_END"
+            # Low-spec system - only go to LOW_END if absolutely necessary
+            if benchmark_duration > 1.5 or (cpu_cores <= 2 and ram_gb < 4):
+                tier = "LOW_END"
+            else:
+                tier = "BALANCED"
 
         tuner_logger.info(
-            f"Suggested performance tier: {tier} (Benchmark: {benchmark_duration:.2f}s, Cores: {cpu_cores}, RAM: {ram_gb}GB)")
+            f"Suggested performance tier: {tier} (Benchmark: {benchmark_duration:.4f}s, CPU Cores (P/L): {cpu_cores}/{cpu_logical}, RAM: {ram_gb}GB)")
         return tier
     except Exception as e_suggest:
         tuner_logger.error(f"Error during performance tier suggestion: {e_suggest}. Defaulting to BALANCED.",
