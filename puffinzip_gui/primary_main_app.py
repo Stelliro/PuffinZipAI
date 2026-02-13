@@ -345,6 +345,8 @@ class PuffinZipApp(tk.Tk):
             ttk.Label(self, text="CRITICAL: Main layout setup error.", style="Error.TLabel").pack(expand=True);
             return
 
+        self._build_menu_bar()
+
         self._populate_evolution_controls_tab();
         self._populate_evolution_analytics_tab();
         self._populate_gdv_tab();
@@ -390,6 +392,70 @@ class PuffinZipApp(tk.Tk):
         self.output_scrolled_text.pack(expand=True, fill=tk.BOTH)
         self.output_scrolled_text.configure(state='disabled')
 
+    def _add_menu_command(self, menu_widget, label, command, key, *, state=tk.NORMAL, storage_dict=None):
+        if not menu_widget:
+            return
+        menu_widget.add_command(label=label, command=command, state=state)
+        storage = storage_dict if storage_dict is not None else getattr(self, 'advanced_menu_entries', {})
+        storage[key] = menu_widget.index("end")
+
+    def _update_menu_entry_state(self, key, enabled, *, menu_widget=None, storage_dict=None):
+        menu = menu_widget if menu_widget is not None else getattr(self, 'advanced_menu', None)
+        storage = storage_dict if storage_dict is not None else getattr(self, 'advanced_menu_entries', None)
+        if not menu or storage is None:
+            return
+        index = storage.get(key)
+        if index is None:
+            return
+        try:
+            menu.entryconfig(index, state=tk.NORMAL if enabled else tk.DISABLED)
+        except tk.TclError:
+            pass
+
+    def _build_menu_bar(self):
+        try:
+            self.menu_bar = tk.Menu(self)
+            self.config(menu=self.menu_bar)
+        except tk.TclError:
+            self.menu_bar = None
+            return
+
+        self.advanced_menu = tk.Menu(self.menu_bar, tearoff=0)
+        self.menu_bar.add_cascade(label="Advanced", menu=self.advanced_menu)
+        self.advanced_menu_entries = {}
+
+        self._add_menu_command(self.advanced_menu, "Continue Evolution", self.continue_evolution_process_gui,
+                               "continue", state=tk.DISABLED)
+        self._add_menu_command(self.advanced_menu, "Pause Evolution", self.pause_els_task,
+                               "pause", state=tk.DISABLED)
+        self._add_menu_command(self.advanced_menu, "Resume Evolution", self.resume_els_task,
+                               "resume", state=tk.DISABLED)
+        self._add_menu_command(self.advanced_menu, "Save Champion Agent...", self.save_champion_agent_gui,
+                               "save_champion", state=tk.DISABLED)
+        self._add_menu_command(self.advanced_menu, "Load Agent as Seed...", self.load_champion_to_seed_gui,
+                               "load_seed")
+        self._add_menu_command(self.advanced_menu, "Generate Static Benchmark Files...",
+                               self.generate_numeric_benchmark_gui, "generate_benchmark", state=tk.DISABLED)
+        self.advanced_menu.add_separator()
+        self._add_menu_command(self.advanced_menu, "Save ELS State...", self.save_els_state_gui,
+                               "save_state", state=tk.DISABLED)
+        self._add_menu_command(self.advanced_menu, "Load ELS State...", self.load_els_state_gui,
+                               "load_state")
+        self.advanced_menu.add_separator()
+
+        self.adaptation_menu = tk.Menu(self.advanced_menu, tearoff=0)
+        self.advanced_menu.add_cascade(label="Adaptation Focus", menu=self.adaptation_menu, state=tk.DISABLED)
+        self.advanced_menu_entries['adaptation'] = self.advanced_menu.index("end")
+        self.adaptation_menu_entries = {}
+        self._add_menu_command(self.adaptation_menu, "Gentle Adaptation", self.apply_low_bottleneck,
+                               "adapt_low", storage_dict=self.adaptation_menu_entries)
+        self._add_menu_command(self.adaptation_menu, "Balanced Adaptation", self.apply_medium_bottleneck,
+                               "adapt_medium", storage_dict=self.adaptation_menu_entries)
+        self._add_menu_command(self.adaptation_menu, "Strong Adaptation", self.apply_high_bottleneck,
+                               "adapt_high", storage_dict=self.adaptation_menu_entries)
+        self._add_menu_command(self.adaptation_menu, "Reset Adaptation", self.clear_bottleneck_strategy,
+                               "adapt_reset", storage_dict=self.adaptation_menu_entries)
+
     def _cancel_analysis_refresh(self):
         if hasattr(self, '_analysis_refresh_after_id') and self._analysis_refresh_after_id:
             try:
@@ -422,40 +488,20 @@ class PuffinZipApp(tk.Tk):
     def _update_els_button_states(self):
         benchmark_script_ready = self.BENCHMARK_GENERATOR_SCRIPT_PATH and os.path.exists(
             self.BENCHMARK_GENERATOR_SCRIPT_PATH)
-        if hasattr(self, 'generate_benchmark_button') and hasattr(self.generate_benchmark_button,
-                                                                  'winfo_exists') and self.generate_benchmark_button.winfo_exists(): self.generate_benchmark_button.config(
-            state=tk.NORMAL if benchmark_script_ready and not self.task_running else tk.DISABLED)
         no_els_system = EvolutionaryOptimizer is None or self.els_optimizer is None
 
         can_apply_adaptation = not no_els_system and self.task_running and self.current_task_is_els and not self.els_is_paused
-        
+
         can_load_or_save_state = not no_els_system and not self.task_running
         can_save_existing_state = can_load_or_save_state and self.els_optimizer and self.els_optimizer.population
-        
+
         buttons_config = {
             'start_evolution_button': {'enabled': not no_els_system and not self.task_running},
-            'continue_els_button': {
-                'enabled': not no_els_system and not self.task_running and self.els_run_completed and hasattr(
-                    self.els_optimizer, 'population') and self.els_optimizer.population},
-            'pause_els_button': {
-                'enabled': not no_els_system and self.task_running and self.current_task_is_els and not self.els_is_paused},
-            'resume_els_button': {
-                'enabled': not no_els_system and self.task_running and self.current_task_is_els and self.els_is_paused},
-            'save_champion_button': {
-                'enabled': not no_els_system and not self.task_running and self.els_optimizer and hasattr(
-                    self.els_optimizer, 'best_agent_overall') and self.els_optimizer.best_agent_overall},
-            'load_champion_to_els_button': {'enabled': not no_els_system and not self.task_running},
             'stop_els_button': {'enabled': not no_els_system and self.task_running and self.current_task_is_els},
-            'bottleneck_low_button': {'enabled': can_apply_adaptation},
-            'bottleneck_medium_button': {'enabled': can_apply_adaptation},
-            'bottleneck_high_button': {'enabled': can_apply_adaptation},
-            'clear_adaptation_button': {'enabled': can_apply_adaptation},
             'test_ai_button_evo_tab': {'enabled': not self.task_running and self.ai_agent is not None},
             'view_qtable_button_evo_tab': {'enabled': not self.task_running and self.ai_agent is not None},
             'load_model_button_evo_tab': {'enabled': not self.task_running and self.ai_agent is not None},
             'save_model_button_evo_tab': {'enabled': not self.task_running and self.ai_agent is not None},
-            'save_els_state_button': {'enabled': can_save_existing_state},
-            'load_els_state_button': {'enabled': can_load_or_save_state},
         }
         for btn_name, cfg in buttons_config.items():
             button_widget = getattr(self, btn_name, None)
@@ -464,6 +510,32 @@ class PuffinZipApp(tk.Tk):
                     button_widget.config(state=tk.NORMAL if cfg['enabled'] else tk.DISABLED)
                 except tk.TclError:
                     pass
+
+        self._update_menu_entry_state(
+            'generate_benchmark', benchmark_script_ready and not self.task_running)
+        self._update_menu_entry_state('continue',
+                                      not no_els_system and not self.task_running and self.els_run_completed and hasattr(
+                                          self.els_optimizer, 'population') and self.els_optimizer.population)
+        self._update_menu_entry_state('pause',
+                                      not no_els_system and self.task_running and self.current_task_is_els and not self.els_is_paused)
+        self._update_menu_entry_state('resume',
+                                      not no_els_system and self.task_running and self.current_task_is_els and self.els_is_paused)
+        self._update_menu_entry_state('save_champion',
+                                      not no_els_system and not self.task_running and self.els_optimizer and hasattr(
+                                          self.els_optimizer, 'best_agent_overall') and self.els_optimizer.best_agent_overall)
+        self._update_menu_entry_state('load_seed', not no_els_system and not self.task_running)
+        self._update_menu_entry_state('save_state', can_save_existing_state)
+        self._update_menu_entry_state('load_state', can_load_or_save_state)
+
+        adaptation_enabled = can_apply_adaptation
+        self._update_menu_entry_state('adaptation', adaptation_enabled)
+        for adaptation_key in ('adapt_low', 'adapt_medium', 'adapt_high', 'adapt_reset'):
+            self._update_menu_entry_state(
+                adaptation_key,
+                adaptation_enabled,
+                menu_widget=getattr(self, 'adaptation_menu', None),
+                storage_dict=getattr(self, 'adaptation_menu_entries', None)
+            )
 
     def _apply_els_adaptation(self, strategy_name: str, is_clear_action: bool = False):
         if not self.els_optimizer: self.log_message("ELS Error: Evolutionary Optimizer not available.");return
@@ -1284,6 +1356,17 @@ class PuffinZipApp(tk.Tk):
         self._update_els_chart([])
         self.log_message("ELS Info: Starting new evolution process...");
         self._start_ai_task(self.els_optimizer.start_evolution)
+
+    def start_or_continue_evolution_process_gui(self):
+        if self.task_running:
+            self.log_message("ELS Info: Evolution is already running. Use Stop to end the current run before starting again.")
+            return
+        if (self.els_optimizer and self.els_run_completed and hasattr(self.els_optimizer, 'population') and
+                self.els_optimizer.population):
+            self.log_message("ELS Info: Resuming previous evolution with extended exploration.")
+            self.continue_evolution_process_gui()
+        else:
+            self.start_evolution_process_gui()
 
     def continue_evolution_process_gui(self):
         if not self.els_optimizer: self.log_message("ELS Error: Evolutionary Optimizer not available.");return

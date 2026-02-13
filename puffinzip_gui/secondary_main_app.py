@@ -156,91 +156,33 @@ def populate_evolution_controls_tab_content(app):
     # --- 4. Main Action Buttons ---
     action_buttons_frame_main = ttk.Frame(pf, style="TFrame", padding=(0, 10, 0, 5))
     action_buttons_frame_main.pack(fill=tk.X, pady=(10, 0))
-    for i in range(3): action_buttons_frame_main.columnconfigure(i, weight=1, minsize=120)
-    
-    app.start_evolution_button = ttk.Button(action_buttons_frame_main, text=SYMBOL_PLAY + " Start New Evolution",
-                                            style="TButton", command=lambda: app.start_evolution_process_gui())
-    app.start_evolution_button.grid(row=0, column=0, padx=(0, 5), pady=5, sticky=tk.EW, ipady=5)
-    
-    app.continue_els_button = ttk.Button(action_buttons_frame_main, text=SYMBOL_CONTINUE + " Continue Evolution",
-                                         style="TButton", command=lambda: app.continue_evolution_process_gui(),
-                                         state=tk.DISABLED)
-    app.continue_els_button.grid(row=0, column=1, padx=5, pady=5, sticky=tk.EW, ipady=5)
-    
-    app.save_champion_button = ttk.Button(action_buttons_frame_main, text=SYMBOL_CHAMPION + " Save Champion Agent",
-                                          style="TButton", command=lambda: app.save_champion_agent_gui(),
-                                          state=tk.DISABLED)
-    app.save_champion_button.grid(row=0, column=2, padx=(5, 0), pady=5, sticky=tk.EW, ipady=5)
-    
-    app.pause_els_button = ttk.Button(action_buttons_frame_main, text=SYMBOL_PAUSE + " Pause Evolution",
-                                      style="TButton", command=lambda: app.pause_els_task(), state=tk.DISABLED)
-    app.pause_els_button.grid(row=1, column=0, padx=(0, 5), pady=5, sticky=tk.EW, ipady=5)
-    
-    app.resume_els_button = ttk.Button(action_buttons_frame_main, text=SYMBOL_PLAY + " Resume Evolution",
-                                       style="TButton", command=lambda: app.resume_els_task(), state=tk.DISABLED)
-    app.resume_els_button.grid(row=1, column=1, padx=5, pady=5, sticky=tk.EW, ipady=5)
-    
-    app.stop_els_button = ttk.Button(action_buttons_frame_main, text=SYMBOL_STOP + " Stop Evolution Run",
-                                     style="TButton", command=lambda: app.request_task_stop(), state=tk.DISABLED)
-    app.stop_els_button.grid(row=1, column=2, padx=(5, 0), pady=5, sticky=tk.EW, ipady=5)
+    action_buttons_frame_main.columnconfigure(0, weight=1, minsize=160)
+    action_buttons_frame_main.columnconfigure(1, weight=1, minsize=160)
 
-    # --- 5. Continuous Mode Toggle ---
-    continuous_toggle_frame = ttk.Frame(pf, style="TFrame", padding=(5, 0, 5, 5))
-    continuous_toggle_frame.pack(fill=tk.X, pady=(0, 5))
-    app.els_continuous_mode_check = ttk.Checkbutton(
-        continuous_toggle_frame,
-        text="Infinite Generations (Continuous Run)",
-        variable=app.els_continuous_mode_var,
-        command=app.on_toggle_els_continuous_mode,
-        style="TCheckbutton")
-    app.els_continuous_mode_check.pack(anchor=tk.W)
-    if hasattr(app, '_sync_els_continuous_config'):
-        app._sync_els_continuous_config()
+    app.start_evolution_button = ttk.Button(
+        action_buttons_frame_main,
+        text=SYMBOL_PLAY + " Start / Continue",
+        style="TButton",
+        command=app.start_or_continue_evolution_process_gui
+    )
+    app.start_evolution_button.grid(row=0, column=0, padx=(0, 10), pady=5, sticky=tk.EW, ipady=8)
 
-    # --- 6. Utility Buttons ---
-    utility_buttons_frame = ttk.Frame(pf, style="TFrame", padding=(0, 5, 0, 5))
-    utility_buttons_frame.pack(fill=tk.X, pady=(5, 5))
-    utility_buttons_frame.columnconfigure(0, weight=1);
-    utility_buttons_frame.columnconfigure(1, weight=1)
-    
-    app.load_champion_to_els_button = ttk.Button(utility_buttons_frame,
-                                                 text=SYMBOL_SEED + " Load Agent to Seed Evolution", style="TButton",
-                                                 command=lambda: app.load_champion_to_seed_gui())
-    app.load_champion_to_els_button.grid(row=0, column=0, padx=(0, 5), pady=(5, 5), sticky=tk.EW, ipady=5)
-    
-    app.generate_benchmark_button = ttk.Button(utility_buttons_frame,
-                                               text=SYMBOL_SETTINGS + " Generate Static Benchmark Files",
-                                               style="TButton", command=lambda: app.generate_numeric_benchmark_gui())
-    app.generate_benchmark_button.grid(row=0, column=1, padx=(5, 0), pady=(5, 5), sticky=tk.EW, ipady=5)
-    
-    # --- 7. Session Management ---
-    session_mgmt_frame = _create_section_frame(pf, "Save/Load Full ELS Session", app)
-    session_mgmt_frame.columnconfigure(0, weight=1)
-    session_mgmt_frame.columnconfigure(1, weight=1)
-    app.save_els_state_button = ttk.Button(session_mgmt_frame, text=f"{SYMBOL_SAVE_SESSION} Save ELS State", command=app.save_els_state_gui)
-    app.save_els_state_button.grid(row=0, column=0, padx=(0, 5), pady=5, sticky=tk.EW, ipady=5)
-    app.load_els_state_button = ttk.Button(session_mgmt_frame, text=f"{SYMBOL_LOAD_SESSION} Load ELS State", command=app.load_els_state_gui)
-    app.load_els_state_button.grid(row=0, column=1, padx=(5, 0), pady=5, sticky=tk.EW, ipady=5)
+    app.stop_els_button = ttk.Button(
+        action_buttons_frame_main,
+        text=SYMBOL_STOP + " Stop",
+        style="TButton",
+        command=app.request_task_stop,
+        state=tk.DISABLED
+    )
+    app.stop_els_button.grid(row=0, column=1, padx=(10, 0), pady=5, sticky=tk.EW, ipady=8)
 
-    # --- 8. Adaptation Controls ---
-    adaptation_frame = _create_section_frame(pf, "Tune Evolution Focus (During Run)", app)
-    for i in range(4): adaptation_frame.columnconfigure(i, weight=1)
-    
-    app.bottleneck_low_button = ttk.Button(adaptation_frame, text=SYMBOL_BOTTLENECK_LOW + " Gentle Adaptation",
-                                           style="TButton", command=app.apply_low_bottleneck, state=tk.DISABLED)
-    app.bottleneck_low_button.grid(row=0, column=0, padx=(0, 5), pady=5, sticky=tk.EW, ipady=5)
-    
-    app.bottleneck_medium_button = ttk.Button(adaptation_frame, text=SYMBOL_BOTTLENECK_MED + " Balanced Adaptation",
-                                              style="TButton", command=app.apply_medium_bottleneck, state=tk.DISABLED)
-    app.bottleneck_medium_button.grid(row=0, column=1, padx=5, pady=5, sticky=tk.EW, ipady=5)
-    
-    app.bottleneck_high_button = ttk.Button(adaptation_frame, text=SYMBOL_BOTTLENECK_HIGH + " Strong Adaptation",
-                                            style="TButton", command=app.apply_high_bottleneck, state=tk.DISABLED)
-    app.bottleneck_high_button.grid(row=0, column=2, padx=5, pady=5, sticky=tk.EW, ipady=5)
-    
-    app.clear_adaptation_button = ttk.Button(adaptation_frame, text=SYMBOL_RESET + " Reset Adaptation", style="TButton",
-                                             command=app.clear_bottleneck_strategy, state=tk.DISABLED)
-    app.clear_adaptation_button.grid(row=0, column=3, padx=(5, 0), pady=5, sticky=tk.EW, ipady=5)
+    ttk.Label(
+        pf,
+        text="Advanced controls (pause, save state, seeding, adaptations) are available from the Advanced menu.",
+        style="TLabel",
+        wraplength=520,
+        justify=tk.LEFT
+    ).pack(fill=tk.X, padx=5, pady=(10, 0))
 
     app._update_els_button_states()
 
