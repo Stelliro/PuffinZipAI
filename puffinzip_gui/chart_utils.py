@@ -349,6 +349,204 @@ def plot_action_distribution(parent_frame: tk.Frame, action_counts: dict, title:
     if canvas: canvas.draw_idle()
     return canvas, fig
 
+def downsample_data(data, max_points=500):
+    if len(data) <= max_points: return data
+    # Keep first, last, and every Nth point
+    indices = np.linspace(0, len(data)-1, max_points).astype(int)
+    return [data[i] for i in indices]
+
+def plot_evolution_with_stats(parent_frame: tk.Frame,
+                              fitness_history_data: list,
+                              compression_score: float = 0.0,
+                              dataset_size: int = 0,
+                              title: str = "Evolution Fitness & Metrics",
+                              existing_canvas_agg=None, existing_figure=None, app_instance=None,
+                              show_best: bool = True, show_avg: bool = True,
+                              show_worst: bool = False, show_median: bool = False):
+    """
+    Plot evolution fitness with compression score and dataset size display.
+    
+    Args:
+        parent_frame: Tkinter frame to contain the chart
+        fitness_history_data: List of (gen, best, avg, worst, median) tuples
+        compression_score: Generalized compression score (0-100)
+        dataset_size: Size of training dataset in bytes
+        title: Chart title
+        existing_canvas_agg: Reuse existing canvas if provided
+        existing_figure: Reuse existing figure if provided
+        app_instance: Application instance for theme colors
+        show_best/avg/worst/median: Which lines to display
+    
+    Returns:
+        Tuple of (canvas, figure)
+    """
+    fig_face_color = _get_theme_attr(app_instance, 'FRAME_BG', CHART_FIGURE_FACECOLOR_DEFAULT)
+    ax_face_color = _get_theme_attr(app_instance, 'INPUT_BG', CHART_BACKGROUND_COLOR_DEFAULT)
+    text_color = _get_theme_attr(app_instance, 'FG_COLOR', CHART_TEXT_COLOR_DEFAULT)
+    grid_color = _get_theme_attr(app_instance, 'TAB_BORDER_COLOR', CHART_GRID_COLOR_DEFAULT)
+    spine_color = _get_theme_attr(app_instance, 'DISABLED_FG_COLOR', CHART_SPINE_COLOR_DEFAULT)
+    tick_color = _get_theme_attr(app_instance, 'LABEL_FG', CHART_TICK_COLOR_DEFAULT)
+    best_line_color_theme = _get_theme_attr(app_instance, 'ACCENT_COLOR', PLOT_LINE_COLOR_BEST_DEFAULT)
+    avg_line_color_theme = _get_theme_attr(app_instance, 'SCROLLBAR_BG', PLOT_LINE_COLOR_AVG_DEFAULT)
+    worst_line_color_theme = _get_theme_attr(app_instance, 'ERROR_FG_COLOR', PLOT_LINE_COLOR_WORST_DEFAULT)
+    median_line_color_theme = _get_theme_attr(app_instance, 'ADV_RLE_BAR_COLOR', PLOT_LINE_COLOR_MEDIAN_DEFAULT)
+    font_title_tuple = _get_theme_attr(app_instance, 'FONT_SECTION_TITLE', FONT_TITLE_DEFAULT)
+    font_label_tuple = _get_theme_attr(app_instance, 'FONT_NORMAL', FONT_LABEL_DEFAULT)
+    font_ticks_tuple = _get_theme_attr(app_instance, 'FONT_SMALL', FONT_TICKS_DEFAULT)
+    font_legend_tuple = _get_theme_attr(app_instance, 'FONT_SMALL', FONT_LEGEND_DEFAULT)
+    font_title_mpl = {'family': font_title_tuple[0], 'size': font_title_tuple[1],
+                      'weight': font_title_tuple[2] if len(font_title_tuple) > 2 else 'bold'}
+    font_label_mpl = {'family': font_label_tuple[0], 'size': font_label_tuple[1]}
+    font_ticks_mpl_size = font_ticks_tuple[1]
+    font_legend_mpl_dict = {'family': font_legend_tuple[0], 'size': font_legend_tuple[1]}
+    
+    fig = existing_figure
+    canvas = existing_canvas_agg
+    ax = None
+    
+    if not MATPLOTLIB_AVAILABLE:
+        if canvas and canvas.get_tk_widget() and canvas.get_tk_widget().winfo_exists():
+            canvas.get_tk_widget().pack_forget()
+        display_placeholder_message(parent_frame, "Matplotlib library not found.\nChart cannot be plotted.", app_instance)
+        return None, None
+    
+    if not (parent_frame and parent_frame.winfo_exists()):
+        logger_to_use = getattr(app_instance, 'logger', None)
+        if logger_to_use:
+            logger_to_use.error("plot_evolution_with_stats: Parent frame is invalid or destroyed.")
+        return None, None
+    
+    if canvas and fig:
+        try:
+            fig.clear()
+            ax = fig.add_subplot(111)
+        except Exception as e_clear_fig:
+            logger_to_use = getattr(app_instance, 'logger', None)
+            if logger_to_use:
+                logger_to_use.error(f"Error clearing figure: {e_clear_fig}")
+            if hasattr(canvas, 'get_tk_widget') and canvas.get_tk_widget() and canvas.get_tk_widget().winfo_exists():
+                canvas.get_tk_widget().destroy()
+            canvas, fig = None, None
+            clear_frame_widgets(parent_frame)
+    
+    if not (canvas and fig):
+        clear_frame_widgets(parent_frame)
+        fig = Figure(figsize=(7.5, 5.5), dpi=100, facecolor=fig_face_color)
+        ax = fig.add_subplot(111)
+        canvas = FigureCanvasTkAgg(fig, master=parent_frame)
+        if hasattr(canvas, 'get_tk_widget') and canvas.get_tk_widget():
+            canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=1, pady=1)
+    
+    if not ax:
+        logger_to_use = getattr(app_instance, 'logger', None)
+        if logger_to_use:
+            logger_to_use.error("plot_evolution_with_stats: Axes object (ax) is None.")
+        return canvas, fig
+    
+    if not fitness_history_data:
+        ax.text(0.5, 0.5, "No fitness data available to plot.", ha='center', va='center',
+                color=text_color, fontdict=font_label_mpl)
+        ax.set_xticks([])
+        ax.set_yticks([])
+    else:
+        try:
+            generations = [item[0] + 1 for item in fitness_history_data]
+            series_to_plot = []
+            
+            if show_best:
+                best_fitness_per_gen = [item[1] for item in fitness_history_data]
+                ax.plot(generations, best_fitness_per_gen, marker='o', linestyle='-',
+                       color=best_line_color_theme, markersize=5, linewidth=2, label="Best Fitness", alpha=0.9)
+                series_to_plot.extend(best_fitness_per_gen)
+            
+            if show_avg:
+                avg_fitness_per_gen = [item[2] for item in fitness_history_data]
+                ax.plot(generations, avg_fitness_per_gen, marker='x', linestyle='--',
+                       color=avg_line_color_theme, markersize=5, linewidth=1.5, alpha=0.7, label="Average Fitness")
+                series_to_plot.extend(avg_fitness_per_gen)
+            
+            if show_worst:
+                worst_fitness_per_gen = [item[3] for item in fitness_history_data]
+                ax.plot(generations, worst_fitness_per_gen, marker='^', linestyle=':',
+                       color=worst_line_color_theme, markersize=4, linewidth=1.2, label="Worst Fitness", alpha=0.6)
+                series_to_plot.extend(worst_fitness_per_gen)
+            
+            if show_median:
+                median_fitness_per_gen = [item[4] for item in fitness_history_data]
+                ax.plot(generations, median_fitness_per_gen, marker='s', linestyle='-.',
+                       color=median_line_color_theme, markersize=4, linewidth=1.5, label="Median Fitness", alpha=0.65)
+                series_to_plot.extend(median_fitness_per_gen)
+            
+            ax.set_xlabel("Generation", color=text_color, fontdict=font_label_mpl)
+            ax.set_ylabel("Fitness Score", color=text_color, fontdict=font_label_mpl)
+            ax.tick_params(axis='x', colors=tick_color, labelsize=font_ticks_mpl_size)
+            ax.tick_params(axis='y', colors=tick_color, labelsize=font_ticks_mpl_size)
+            
+            # Set Y-axis limits with padding
+            all_finite_fitness_values = [f for f in series_to_plot if isinstance(f, (int, float)) and np.isfinite(f)]
+            if all_finite_fitness_values:
+                min_fit, max_fit = min(all_finite_fitness_values), max(all_finite_fitness_values)
+                padding_ratio = 0.10
+                fit_range = max_fit - min_fit
+                if abs(fit_range) < 1e-6:
+                    fit_range = abs(max_fit) * 0.2 if abs(max_fit) > 1e-6 else 0.2
+                padding = fit_range * padding_ratio
+                y_bottom, y_top = min_fit - padding, max_fit + padding
+                if abs(y_top - y_bottom) < 1e-6:
+                    y_top += 0.5
+                    y_bottom -= 0.5
+                ax.set_ylim(bottom=y_bottom, top=y_top)
+            else:
+                ax.set_ylim(-1, 1)
+            
+            if generations:
+                ax.set_xlim(left=min(generations) - 0.5 if len(generations) > 1 else 0.5,
+                            right=max(generations) + 0.5)
+            
+            ax.grid(True, linestyle=':', alpha=0.4, color=grid_color)
+            
+            # Add legend
+            handles, labels = ax.get_legend_handles_labels()
+            if handles:
+                legend = ax.legend(handles, labels,
+                                 facecolor=_get_theme_attr(app_instance, 'INPUT_BG', CHART_BACKGROUND_COLOR_DEFAULT),
+                                 edgecolor=spine_color, prop=font_legend_mpl_dict)
+                if legend:
+                    for text_obj in legend.get_texts():
+                        text_obj.set_color(text_color)
+            elif ax.get_legend() is not None:
+                ax.get_legend().remove()
+            
+        except Exception as e_plotting_data_els:
+            logger_to_use = getattr(app_instance, 'logger', None)
+            if logger_to_use:
+                logger_to_use.error(f"Error rendering fitness data: {e_plotting_data_els}", exc_info=True)
+            err_msg = f"Error plotting: {str(e_plotting_data_els)[:50]}..."
+            ax.text(0.5, 0.5, err_msg, ha='center', va='center',
+                   color=_get_theme_attr(app_instance, 'ERROR_FG_COLOR', ERROR_FG_COLOR_DEFAULT),
+                   fontfamily=font_ticks_tuple[0], fontsize=font_ticks_mpl_size - 1)
+    
+    # Build title with stats
+    dataset_size_display = f" | Dataset: {dataset_size / (1024*1024):.2f}MB" if dataset_size > 0 else ""
+    score_display = f" | Score: {compression_score:.2f}/100" if compression_score > 0 else ""
+    full_title = f"{title}{score_display}{dataset_size_display}"
+    
+    ax.set_title(full_title, color=text_color, fontdict=font_title_mpl)
+    ax.set_facecolor(ax_face_color)
+    for spine_obj in ax.spines.values():
+        spine_obj.set_color(spine_color)
+        spine_obj.set_linewidth(0.8)
+    
+    try:
+        fig.tight_layout(pad=2.0)
+    except Exception:
+        pass
+    
+    if canvas:
+        canvas.draw_idle()
+    
+    return canvas, fig
+
 def plot_evolution_fitness(parent_frame: tk.Frame,
                            fitness_history_data: list,
                            title: str = "Evolution Fitness",

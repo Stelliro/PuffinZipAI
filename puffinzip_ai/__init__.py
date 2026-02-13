@@ -258,6 +258,23 @@ try:
 except ImportError as e:
     pass
 
+# Hybrid Compression Engine - Multi-language compression with AI method discovery
+try:
+    _hybrid_module = importlib.import_module(f".hybrid_compression_engine", package=_PACKAGE_NAME_FOR_IMPORTS)
+    globals()['get_hybrid_engine'] = _hybrid_module.get_hybrid_engine
+    _registry_module = importlib.import_module(f".compression_method_registry", package=_PACKAGE_NAME_FOR_IMPORTS)
+    globals()['get_registry'] = _registry_module.get_registry
+    _generator_module = importlib.import_module(f".novel_compression_generator", package=_PACKAGE_NAME_FOR_IMPORTS)
+    globals()['get_generator'] = _generator_module.get_generator
+    globals()['generate_novelty'] = _generator_module.generate_novelty
+    globals()['evolve'] = _generator_module.evolve
+    _PACKAGE_EXPORTS.extend(["get_hybrid_engine", "get_registry", "get_generator", "generate_novelty", "evolve"])
+    _init_logger_pza.info("✨ Hybrid Compression Engine loaded (Python + Rust + Novel Methods)")
+except ImportError as e_hybrid:
+    _init_logger_pza.warning(f"Hybrid Compression Engine not available: {e_hybrid}")
+except Exception as e_hybrid_other:
+    _init_logger_pza.warning(f"Error loading Hybrid Compression Engine: {e_hybrid_other}")
+
 try:
     globals()['calculate_reward'] = importlib.import_module(f".reward_system",
                                                             package=_PACKAGE_NAME_FOR_IMPORTS).calculate_reward

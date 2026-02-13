@@ -583,7 +583,7 @@ class SettingsTab(ttk.Frame):
                 ]  # More comprehensive list of critical ELS params
                 original_val_check = original_cfg_vals_check.get(key)
 
-                if setting_manager.EDITABLE_SETTINGS[key].get("options_logic") == "detect_processing_devices":
+                if settings_manager.EDITABLE_SETTINGS[key].get("options_logic") == "detect_processing_devices":
                     original_val_check_display = original_val_check
                     for d_name, c_val in self.device_options_map.items():
                         if c_val == original_val_check: original_val_check_display = d_name; break

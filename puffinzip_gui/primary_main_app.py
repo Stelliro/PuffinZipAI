@@ -147,6 +147,22 @@ ELS_LOG_PREFIX = CFG_ELS_LOG_PREFIX;
 
 
 class PuffinZipApp(tk.Tk):
+    @staticmethod
+    def _coerce_bool(value, default=True):
+        if isinstance(value, bool):
+            return value
+        if value is None:
+            return default
+        if isinstance(value, (int, np.integer)):
+            return value != 0
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized in {"1", "true", "yes", "on"}:
+                return True
+            if normalized in {"0", "false", "no", "off", ""}:
+                return False
+        return bool(value)
+
     def __init__(self, *args, **kwargs):
         tuned_params = kwargs.pop('tuned_params', None)
         super().__init__(*args, **kwargs)
@@ -156,6 +172,18 @@ class PuffinZipApp(tk.Tk):
         self.logger = None;
         self.APP_VERSION = "PMA_FallbackVer_Init"
         self.app_target_device = CONFIG_TARGET_DEVICE_DEFAULT  # Initialize target device attribute
+
+        continuous_default = True
+        if settings_manager:
+            try:
+                cfg_values = settings_manager.get_config_values()
+                if isinstance(cfg_values, dict) and 'ELS_CONTINUOUS_RUN_ENABLED' in cfg_values:
+                    continuous_default = self._coerce_bool(cfg_values['ELS_CONTINUOUS_RUN_ENABLED'], True)
+            except Exception:
+                pass
+        self.els_continuous_mode_var = tk.BooleanVar(self, value=bool(continuous_default))
+        if isinstance(self.tuned_params, dict) and 'ELS_CONTINUOUS_RUN_ENABLED' not in self.tuned_params:
+            self.tuned_params['ELS_CONTINUOUS_RUN_ENABLED'] = continuous_default
 
         try:
             self.APP_VERSION = CFG_APP_VERSION;
@@ -546,10 +574,26 @@ class PuffinZipApp(tk.Tk):
                 hasattr(target_frame_for_chart, 'winfo_exists') and target_frame_for_chart.winfo_exists()):
             return
 
-        if self.chart_utils and hasattr(self.chart_utils, 'plot_evolution_fitness'):
+        # Get compression score and dataset size from optimizer if available
+        compression_score = 0.0
+        dataset_size = 0
+        if self.els_optimizer and hasattr(self.els_optimizer, 'checkpoint_manager'):
+            cmgr = self.els_optimizer.checkpoint_manager
+            if cmgr.checkpoints_metadata:
+                # Get the latest checkpoint's score
+                latest_key = list(cmgr.checkpoints_metadata.keys())[-1]
+                latest_meta = cmgr.checkpoints_metadata[latest_key]
+                compression_score = latest_meta.compression_score
+        
+        if self.els_optimizer and hasattr(self.els_optimizer, 'current_benchmark_dataset_size'):
+            dataset_size = self.els_optimizer.current_benchmark_dataset_size
+
+        if self.chart_utils and hasattr(self.chart_utils, 'plot_evolution_with_stats'):
             try:
-                self.els_chart_canvas_agg, self.els_chart_figure = self.chart_utils.plot_evolution_fitness(
+                self.els_chart_canvas_agg, self.els_chart_figure = self.chart_utils.plot_evolution_with_stats(
                     parent_frame=target_frame_for_chart, fitness_history_data=fitness_data,
+                    compression_score=compression_score, dataset_size=dataset_size,
+                    title="Evolution Fitness Progression",
                     existing_canvas_agg=self.els_chart_canvas_agg, existing_figure=self.els_chart_figure,
                     app_instance=self,
                     show_best=self.els_plot_show_best_var.get(), show_avg=self.els_plot_show_avg_var.get(),
@@ -777,18 +821,36 @@ class PuffinZipApp(tk.Tk):
         try:
             while True:
                 message = self.gui_output_queue.get_nowait()
+                
+                # --- NEW PROGRESS BAR HANDLER ---
+                if message.startswith("ELS_PROGRESS:"):
+                    # Format: "ELS_PROGRESS:<float_percent>" or "ELS_PROGRESS:INDETERMINATE" or "ELS_PROGRESS:STOP"
+                    val_str = message.split(":", 1)[1]
+                    if hasattr(self, 'els_progress_bar') and self.els_progress_bar.winfo_exists():
+                        if val_str == "INDETERMINATE":
+                            self.els_progress_bar.config(mode="indeterminate")
+                            self.els_progress_bar.start(10)
+                        elif val_str == "STOP":
+                            self.els_progress_bar.stop()
+                            self.els_progress_bar.config(mode="determinate", value=0)
+                        else:
+                            try:
+                                self.els_progress_bar.stop() # Ensure it stops bouncing
+                                self.els_progress_bar.config(mode="determinate")
+                                self.els_progress_bar['value'] = float(val_str)
+                            except ValueError: pass
+                    continue
+                # -------------------------------
+
                 if message.startswith(ELS_STATS_MSG_PREFIX):
+                    # ... (Existing Stats Logic) ...
                     stats_data_str = message.replace(ELS_STATS_MSG_PREFIX, "").strip()
                     try:
                         eval_data = eval(stats_data_str, {"__builtins__": {}},
                                          {'np': np, 'inf': float('inf'), '-inf': float('-inf'), 'nan': float('nan')})
-                        is_valid_format = isinstance(eval_data, list) and (not eval_data or all(
-                            isinstance(item, tuple) and len(item) == 5 and all(
-                                isinstance(num, (int, float, np.number)) for num in item) for item in eval_data))
+                        is_valid_format = isinstance(eval_data, list)
                         if is_valid_format:
                             self.els_fitness_history_data = eval_data
-                        else:
-                            pass
                         self._update_els_chart(self.els_fitness_history_data)
                     except Exception as e_eval:
                         pass
@@ -810,8 +872,7 @@ class PuffinZipApp(tk.Tk):
             try:
                 self.after(100, self._check_gui_queue)
             except tk.TclError:
-                if not self._shutting_down:
-                    pass
+                if not self._shutting_down: pass
                 self._shutting_down = True
 
     def log_message(self, message_text, source="app"):
@@ -887,8 +948,9 @@ class PuffinZipApp(tk.Tk):
         start_log_msg = f"--- Task Started: {task_name} ---"
         if self.gui_output_queue:
             self.gui_output_queue.put(start_log_msg)
-        else:
-            pass
+            # Start indeterminate progress for initialization
+            self.gui_output_queue.put("ELS_PROGRESS:INDETERMINATE") 
+        
         is_els_task_for_status_update = task_name in ["start_evolution", "continue_evolution"]
         if is_els_task_for_status_update and hasattr(self, 'els_status_label') and hasattr(self.els_status_label,
                                                                                            'winfo_exists') and self.els_status_label.winfo_exists():
@@ -971,28 +1033,61 @@ class PuffinZipApp(tk.Tk):
                 finish_log_msg = f"--- Task Finished: {task_name} ---";
                 if self.gui_output_queue:
                     self.gui_output_queue.put(finish_log_msg)
-                else:
-                    pass
-                if is_els_task_for_status_update and hasattr(self,
-                                                             'gdv_tab_instance') and self.gdv_tab_instance and hasattr(
-                    self.gdv_tab_instance, 'load_and_display_data'):
+                
+                if is_els_task_for_status_update and hasattr(self, 'gdv_tab_instance') and self.gdv_tab_instance:
                     try:
                         self.after(50, self.gdv_tab_instance.load_and_display_data)
-                    except Exception as e_gdv_refresh:
-                        pass
+                    except Exception: pass
 
             if hasattr(self, 'after') and callable(self.after) and not self._shutting_down:
+                try: self.after(0, final_gui_updates_safe)
+                except: pass
+
+    def _sync_els_continuous_config(self):
+        desired_raw = self.els_continuous_mode_var.get() if hasattr(self, 'els_continuous_mode_var') else True
+        desired = self._coerce_bool(desired_raw, True)
+        if isinstance(self.tuned_params, dict):
+            self.tuned_params['ELS_CONTINUOUS_RUN_ENABLED'] = desired
+        if self.els_optimizer:
+            if hasattr(self.els_optimizer, 'set_continuous_run_enabled'):
                 try:
-                    self.after(0, final_gui_updates_safe)
-                except tk.TclError:
+                    self.els_optimizer.set_continuous_run_enabled(desired)
+                except Exception:
                     pass
-                except Exception as e_after_final:
-                    pass
-            elif not self._shutting_down:
-                try:
-                    final_gui_updates_safe()
-                except Exception as e_direct_call_final:
-                    pass
+            else:
+                if hasattr(self.els_optimizer, 'config') and isinstance(self.els_optimizer.config, dict):
+                    self.els_optimizer.config['ELS_CONTINUOUS_RUN_ENABLED'] = desired
+                if isinstance(getattr(self.els_optimizer, 'tuned_params', None), dict):
+                    self.els_optimizer.tuned_params['ELS_CONTINUOUS_RUN_ENABLED'] = desired
+
+    def _rehydrate_els_history_from_optimizer(self):
+        if not self.els_optimizer:
+            return
+        history_source = None
+        try:
+            if hasattr(self.els_optimizer, 'get_serializable_fitness_history') and callable(
+                    self.els_optimizer.get_serializable_fitness_history):
+                history_source = self.els_optimizer.get_serializable_fitness_history()
+            else:
+                raw_history = getattr(self.els_optimizer, 'fitness_history_per_generation', None)
+                if isinstance(raw_history, list):
+                    history_source = []
+                    for entry in raw_history:
+                        if isinstance(entry, (tuple, list)) and len(entry) == 5:
+                            try:
+                                history_source.append(
+                                    (int(entry[0]), float(entry[1]), float(entry[2]), float(entry[3]), float(entry[4])))
+                            except (TypeError, ValueError):
+                                continue
+        except Exception:
+            history_source = None
+        if history_source is not None:
+            self.els_fitness_history_data = history_source
+
+    def on_toggle_els_continuous_mode(self):
+        self._sync_els_continuous_config()
+        mode_label = "enabled" if self.els_continuous_mode_var.get() else "disabled"
+        self.log_message(f"ELS Info: Continuous generation mode {mode_label} for upcoming runs.")
 
     def _start_ai_task(self, actual_ai_method, *args, **kwargs):
         if self.task_running: self.log_message(
@@ -1008,8 +1103,11 @@ class PuffinZipApp(tk.Tk):
             self.els_run_completed = False
         self._update_els_button_states()
         if self.current_task_is_els:
-            self.els_fitness_history_data.clear();
-            self._update_els_chart([])
+            continue_method = getattr(self.els_optimizer, 'continue_evolution', None) if self.els_optimizer else None
+            is_continue_task = continue_method is not None and actual_ai_method == continue_method
+            if not is_continue_task:
+                self.els_fitness_history_data.clear()
+            self._update_els_chart(self.els_fitness_history_data)
             if hasattr(self, 'els_status_label') and hasattr(self.els_status_label,
                                                              'winfo_exists') and self.els_status_label.winfo_exists():
                 try:
@@ -1225,6 +1323,7 @@ class PuffinZipApp(tk.Tk):
                     f"ELS Error: Failed to initialize Evolutionary Optimizer: {e_reinit_els}");
                 self.els_optimizer = None;
                 return
+        self._sync_els_continuous_config()
         if self.task_running: self.log_message("ELS Error: Another AI task is already running."); return
         selected_bm_strategy = self.els_initial_benchmark_strategy_var.get();
         user_bm_size_mb_override = None;
@@ -1280,6 +1379,13 @@ class PuffinZipApp(tk.Tk):
         self.els_optimizer.initial_benchmark_target_size_mb = None;
         self.els_optimizer.initial_benchmark_fixed_complexity_name = None
         self.els_optimizer.els_target_device = self.app_target_device
+        self._rehydrate_els_history_from_optimizer()
+        if hasattr(self, 'gdv_tab_instance') and self.gdv_tab_instance:
+            try:
+                self.gdv_tab_instance.load_and_display_data()
+            except Exception:
+                pass
+        self._sync_els_continuous_config()
         self._start_ai_task(self.els_optimizer.continue_evolution, additional_generations=None)
 
     def pause_els_task(self):
@@ -1505,7 +1611,13 @@ if __name__ == '__main__':
             tuned_params_for_app_standalone = performance_tuner.get_tuned_parameters();
         except Exception as e_pt_main_standalone:
             tuned_params_for_app_standalone = {
-                "AGENTS_PER_THROTTLE_CHECK": 5, "THROTTLE_SLEEP_DURATION_BENCH_EVAL": 0.001}
+                "AGENTS_PER_THROTTLE_CHECK": 5, 
+                "ITEMS_PER_THROTTLE_CHECK": 10,
+                "THROTTLE_SLEEP_DURATION_BENCH_EVAL": 0.0005,
+                "RLE_THROTTLE_RUN_LENGTH_THRESHOLD": 2 * 1024 * 1024,
+                "RLE_THROTTLE_CHUNK_SIZE": 512 * 1024,
+                "RLE_THROTTLE_SLEEP_DURATION": 0.0005
+            }
         app_instance = PuffinZipApp(tuned_params=tuned_params_for_app_standalone)
         app_instance.mainloop()
     except Exception as e_app_test_run:
