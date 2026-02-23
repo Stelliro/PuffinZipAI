@@ -86,8 +86,8 @@ PuffinZipAI/
 │   └── index.html
 │
 ├── scripts/                        # Launcher scripts & build specs
-│   ├── start_a40.sh              # A40 Linux pod launcher (auto-setup + run)
-│   ├── start_a100.sh             # A100 PCIe Linux pod launcher (auto-setup + run)
+│   ├── start_a40.sh              # A40 pod launcher (self-contained: auto-clone, multi-GPU/CPU, cache eviction)
+│   ├── start_a100.sh             # A100 PCIe pod launcher (self-contained: auto-clone, multi-GPU/CPU, cache eviction)
 │   ├── package_a100.bat          # Windows: package project ZIP for A100 pod
 │   ├── _package_a100_impl.ps1    # PowerShell implementation for package_a100.bat
 │   ├── run_gui_windows.bat
@@ -1318,6 +1318,8 @@ entire evolutionary pipeline (crossover, mutation, selection, GUI, WebUI) works 
 | `GITHUB_API_TOKEN` | `os.environ.get('GITHUB_TOKEN')` | Optional API token for higher rate limits |
 | `GITHUB_MIN_STARS` | `500` | Star threshold for auto-trusted repos |
 | `GITHUB_FETCH_TIMEOUT` | `15` | HTTP request timeout (seconds) |
+| `GITHUB_CACHE_MAX_FILES` | `500` (env: `PUFFIN_CACHE_MAX_FILES`) | Max cached files before LRU eviction |
+| `GITHUB_CACHE_MAX_MB` | `200` (env: `PUFFIN_CACHE_MAX_MB`) | Max cache size in MB before LRU eviction |
 | `GITHUB_FILE_EXTENSIONS` | 26 extensions | File extension whitelist |
 | `GITHUB_TRUSTED_REPOS` | 17 repos | Curated allowlist |
 
@@ -1720,4 +1722,6 @@ entire evolutionary pipeline (crossover, mutation, selection, GUI, WebUI) works 
 | `run_webui.sh` | Linux/macOS | Launches Flask web UI (port 5000) |
 | `generate_datasets.bat` | Windows | Generates benchmark dataset files |
 | `run_gui.spec` | — | PyInstaller build spec for GUI executable |
+| `start_a40.sh` | Linux | **Self-contained** A40 pod launcher — clones repo if missing, creates venv, installs deps (CUDA PyTorch + CuPy), enumerates all GPUs (`CUDA_VISIBLE_DEVICES`), auto-detects CPU workers, runs pre-flight cache eviction, starts WebUI. Env vars: `PUFFIN_GPUS`, `PUFFIN_WORKERS`, `PUFFIN_CACHE_MAX_MB`, `PUFFIN_CACHE_MAX_FILES`, `PUFFIN_PORT`, `PUFFIN_HOST`, `PUFFIN_REPO_URL`, `PUFFIN_REPO_BRANCH`, `GITHUB_TOKEN` |
+| `start_a100.sh` | Linux | **Self-contained** A100 PCIe pod launcher — same as A40 with A100 VRAM checks. All env vars from A40 script apply |
 | `package_a100.bat` + `_package_a100_impl.ps1` | Windows | Packages all deployment files into a ZIP for the A100 PCIe pod (pre-cleans __pycache__/logs, excludes .venv/data/models) |

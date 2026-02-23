@@ -49,6 +49,9 @@ _GITHUB_FETCH_TIMEOUT: int = 15
 
 _logger: logging.Logger = logging.getLogger("GitHubFileFetcher")
 
+_GITHUB_CACHE_MAX_FILES: int = 500
+_GITHUB_CACHE_MAX_MB: int = 200
+
 try:
     from ..config import (
         GITHUB_CACHE_DIR,
@@ -59,6 +62,8 @@ try:
         GITHUB_FILE_EXTENSIONS,
         GITHUB_TRUSTED_REPOS,
         GITHUB_FETCH_TIMEOUT,
+        GITHUB_CACHE_MAX_FILES,
+        GITHUB_CACHE_MAX_MB,
     )
     _GITHUB_CACHE_DIR = GITHUB_CACHE_DIR
     _GITHUB_TARGET_SIZE_MIN = GITHUB_TARGET_FILE_SIZE_MIN
@@ -68,6 +73,8 @@ try:
     _GITHUB_FILE_EXTENSIONS = GITHUB_FILE_EXTENSIONS
     _GITHUB_TRUSTED_REPOS = GITHUB_TRUSTED_REPOS
     _GITHUB_FETCH_TIMEOUT = GITHUB_FETCH_TIMEOUT
+    _GITHUB_CACHE_MAX_FILES = GITHUB_CACHE_MAX_FILES
+    _GITHUB_CACHE_MAX_MB = GITHUB_CACHE_MAX_MB
 except ImportError:
     pass
 
@@ -133,6 +140,8 @@ DEFAULT_FILE_EXTENSIONS: list[str] = [
 
 CACHE_INDEX_FILENAME = "_index.json"
 MAX_CACHE_AGE_SECONDS = 7 * 24 * 3600  # Re-fetch after 7 days
+DEFAULT_CACHE_MAX_FILES = 500
+DEFAULT_CACHE_MAX_BYTES = 200 * 1024 * 1024  # 200 MB
 
 
 class GitHubFileFetcher:
@@ -158,6 +167,8 @@ class GitHubFileFetcher:
         api_token: str | None = None,
         min_stars: int | None = None,
         logger_instance: logging.Logger | None = None,
+        max_cache_files: int | None = None,
+        max_cache_mb: int | None = None,
     ):
         self.logger = logger_instance or _logger
 
@@ -178,6 +189,10 @@ class GitHubFileFetcher:
         # --- Size constraints ---
         self.target_min = target_min if target_min is not None else _GITHUB_TARGET_SIZE_MIN
         self.target_max = target_max if target_max is not None else _GITHUB_TARGET_SIZE_MAX
+
+        # --- Cache eviction limits ---
+        self.max_cache_files = max_cache_files if max_cache_files is not None else _GITHUB_CACHE_MAX_FILES
+        self.max_cache_bytes = (max_cache_mb if max_cache_mb is not None else _GITHUB_CACHE_MAX_MB) * 1024 * 1024
 
         # --- Trust & filtering ---
         self.trusted_repos = trusted_repos or _GITHUB_TRUSTED_REPOS or list(DEFAULT_TRUSTED_REPOS)
@@ -249,7 +264,10 @@ class GitHubFileFetcher:
             return None
 
     def _write_cache(self, key: str, content: str, repo: str, file_path: str) -> None:
-        """Write content to cache and update index."""
+        """Write content to cache and update index. Triggers eviction if limits exceeded."""
+        # Evict before writing if at capacity
+        self._evict_if_needed()
+
         cache_file = os.path.join(self.cache_dir, f"{key}.txt")
         try:
             with open(cache_file, "w", encoding="utf-8") as f:
@@ -262,6 +280,57 @@ class GitHubFileFetcher:
             }
         except Exception as e:
             self.logger.warning(f"Cache write failed for {repo}:{file_path}: {e}")
+
+    def _evict_if_needed(self) -> int:
+        """Evict oldest cached files when cache exceeds file-count or byte-size limits.
+
+        Uses LRU (least-recently-fetched) eviction.  This prevents pod storage
+        from filling up during high-population runs that pull many GitHub files.
+
+        Returns:
+            Number of files evicted.
+        """
+        if not self._index:
+            return 0
+
+        total_bytes = sum(m.get("size", 0) for m in self._index.values())
+        total_files = len(self._index)
+
+        if total_files <= self.max_cache_files and total_bytes <= self.max_cache_bytes:
+            return 0
+
+        # Sort by fetched_at ascending (oldest first)
+        sorted_keys = sorted(
+            self._index.keys(),
+            key=lambda k: self._index[k].get("fetched_at", 0),
+        )
+
+        evicted = 0
+        for key in sorted_keys:
+            if total_files <= self.max_cache_files and total_bytes <= self.max_cache_bytes:
+                break
+
+            entry_size = self._index[key].get("size", 0)
+            cache_file = os.path.join(self.cache_dir, f"{key}.txt")
+            try:
+                if os.path.isfile(cache_file):
+                    os.remove(cache_file)
+            except OSError:
+                pass
+
+            del self._index[key]
+            total_files -= 1
+            total_bytes -= entry_size
+            evicted += 1
+
+        if evicted > 0:
+            self._save_index()
+            self.logger.info(
+                f"Cache eviction: removed {evicted} oldest files "
+                f"({total_files} files, {total_bytes / 1024 / 1024:.1f} MB remaining)"
+            )
+
+        return evicted
 
     # ------------------------------------------------------------------
     #  GitHub API helpers
@@ -606,9 +675,11 @@ class GitHubFileFetcher:
         return removed
 
     def cache_stats(self) -> dict:
-        """Return a summary of the cache contents."""
+        """Return a summary of the cache contents, including eviction limits."""
         if not self._index:
-            return {"total_files": 0, "total_bytes": 0, "repos": {}}
+            return {"total_files": 0, "total_bytes": 0, "repos": {},
+                    "max_files": self.max_cache_files,
+                    "max_bytes": self.max_cache_bytes}
         total_bytes = sum(m.get("size", 0) for m in self._index.values())
         repos: dict[str, int] = {}
         for meta in self._index.values():
@@ -618,4 +689,6 @@ class GitHubFileFetcher:
             "total_files": len(self._index),
             "total_bytes": total_bytes,
             "repos": repos,
+            "max_files": self.max_cache_files,
+            "max_bytes": self.max_cache_bytes,
         }

@@ -145,6 +145,13 @@ GITHUB_TARGET_FILE_SIZE_MAX = 51200          # 50 KB — maximum file size to fe
 GITHUB_API_TOKEN = os.environ.get('GITHUB_TOKEN', None)  # Optional: set GITHUB_TOKEN env var for higher rate limits
 GITHUB_MIN_STARS = 500                       # Minimum star count for auto-trusted repos
 GITHUB_FETCH_TIMEOUT = 15                    # HTTP request timeout in seconds
+
+# --- GitHub Cache Eviction ---
+# Prevents cache from filling pod storage during high-population runs.
+# When the cache exceeds MAX_FILES, the oldest entries (by fetch time) are evicted.
+# PUFFIN_CACHE_MAX_MB env var overrides the MB limit at runtime.
+GITHUB_CACHE_MAX_FILES = int(os.environ.get('PUFFIN_CACHE_MAX_FILES', 500))     # Max cached files before LRU eviction
+GITHUB_CACHE_MAX_MB = int(os.environ.get('PUFFIN_CACHE_MAX_MB', 200))           # Max cache size in MB before LRU eviction
 GITHUB_FILE_EXTENSIONS = [                   # Only fetch files with these extensions
     '.py', '.js', '.ts', '.jsx', '.tsx',
     '.md', '.txt', '.rst', '.html', '.css',
