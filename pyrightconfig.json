@@ -1,0 +1,20 @@
+{
+  "typeCheckingMode": "basic",
+  "reportUnknownMemberType": false,
+  "reportUnknownArgumentType": false,
+  "reportUnknownVariableType": false,
+  "reportUnknownParameterType": false,
+  "reportUnknownLambdaType": false,
+  "reportMissingTypeStubs": false,
+  "reportMissingModuleSource": false,
+  "reportMissingImports": "warning",
+  "reportGeneralTypeIssues": "warning",
+  "pythonVersion": "3.11",
+  "exclude": [
+    "**/__pycache__",
+    ".venv",
+    "node_modules",
+    "build",
+    "dist"
+  ]
+}

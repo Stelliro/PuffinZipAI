@@ -9,7 +9,7 @@
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 </head>
 <body>
-    <!-- Navigation Bar -->
+    <!-- ====== NAVBAR ====== -->
     <nav class="navbar">
         <div class="navbar-container">
             <div class="navbar-brand">
@@ -17,366 +17,559 @@
                 <span class="logo-text">PuffinZipAI</span>
                 <span class="version">v{{ version }}</span>
             </div>
-            <div class="navbar-status">
+            <div class="navbar-center">
                 <div class="status-indicator" id="status-indicator"></div>
                 <span id="status-text">Ready</span>
             </div>
-        </div>
-    </navigation>
-
-    <!-- Main Container -->
-    <div class="container">
-        <!-- Persistent Graph Section (Follows Across Tabs) -->
-        <div class="graph-section">
-            <div class="graph-header">
-                <h3>📊 Generation Progress</h3>
-                <div class="graph-controls">
-                    <button class="btn-icon" id="graph-refresh" title="Refresh">↻</button>
-                    <button class="btn-icon" id="graph-fullscreen" title="Fullscreen">⛶</button>
-                    <span id="graph-indicator" style="display:inline-flex;align-items:center;margin-left:12px;font-weight:600;color:var(--text-muted);"></span>
-                </div>
-            </div>
-            <div class="graph-wrapper">
-                <canvas id="fitnessChart"></canvas>
+            <div class="navbar-actions">
+                <button class="btn btn-sm btn-primary" id="btn-start">▶ Start</button>
+                <button class="btn btn-sm btn-danger" id="btn-stop" disabled>⏹ Stop</button>
             </div>
         </div>
+    </nav>
 
-        <!-- Tab Navigation -->
-        <div class="tabs-header">
-            <button class="tab-btn active" data-tab="training">
-                <span class="tab-icon">🎯</span> Training
-            </button>
-            <button class="tab-btn" data-tab="logs">
-                <span class="tab-icon">📜</span> Logs
-            </button>
-            <button class="tab-btn" data-tab="compression">
-                <span class="tab-icon">📦</span> Methods
-            </button>
-            <button class="tab-btn" data-tab="settings">
-                <span class="tab-icon">⚙️</span> Settings
-            </button>
+    <!-- ====== TOP-LEVEL TABS ====== -->
+    <div class="top-tabs">
+        <button class="top-tab-btn active" data-top-tab="dashboard">
+            <span class="tab-icon">📊</span> Dashboard
+        </button>
+        <button class="top-tab-btn" data-top-tab="deep-dive">
+            <span class="tab-icon">🧠</span> Evolution Deep Dive
+        </button>
+    </div>
+
+    <!-- ====== TAB 1: DASHBOARD (existing content) ====== -->
+    <div class="top-tab-content active" id="dashboard-top-tab">
+
+    <!-- ====== DASHBOARD GRID ====== -->
+    <div class="dashboard">
+
+        <!-- ---- ROW 1: KPI Strip ---- -->
+        <div class="kpi-strip">
+            <div class="kpi-card">
+                <div class="kpi-label">Generation</div>
+                <div class="kpi-value" id="gen-count">0</div>
+            </div>
+            <div class="kpi-card accent-green">
+                <div class="kpi-label">Score (Compression)</div>
+                <div class="kpi-value" id="score-value">0.00%</div>
+            </div>
+            <div class="kpi-card accent-amber">
+                <div class="kpi-label">Complexity</div>
+                <div class="kpi-value" id="metric-complexity-tier">VERY SIMPLE</div>
+                <div class="kpi-sub" id="metric-complexity-level">Tier 0 / 4</div>
+            </div>
+            <div class="kpi-card accent-blue">
+                <div class="kpi-label">Benchmark Size</div>
+                <div class="kpi-value" id="metric-file-size">0.0 MB</div>
+                <div class="kpi-sub" id="metric-tier-info">Budget: — | Ceiling: —</div>
+            </div>
+            <div class="kpi-card accent-purple">
+                <div class="kpi-label">Robustness</div>
+                <div class="kpi-value" id="metric-robustness">0.0000</div>
+                <div class="kpi-sub" id="metric-training-phase">—</div>
+            </div>
+            <div class="kpi-card">
+                <div class="kpi-label">Status</div>
+                <div class="kpi-value" id="training-status">Idle</div>
+                <div class="kpi-sub" id="metric-evo-time">0.0s</div>
+            </div>
         </div>
 
-        <!-- Tab Content -->
-        <div class="tabs-container">
+        <!-- ---- ROW 2: Main Content (2 columns) ---- -->
+        <div class="main-row">
 
-            <!-- Training Tab -->
-            <div class="tab-content active" id="training-tab">
-                <div class="card">
-                    <div class="card-header">
-                        <h2>Training Control</h2>
-                    </div>
-                    <div class="card-body">
-                        <!-- Status Cards -->
-                        <div class="status-grid">
-                            <div class="status-card">
-                                <div class="status-label">Generation</div>
-                                <div class="status-value" id="gen-count">0</div>
-                            </div>
-                            <div class="status-card">
-                                <div class="status-label">Score</div>
-                                <div class="status-value" id="score-value">0.00</div>
-                            </div>
-                            <div class="status-card">
-                                <div class="status-label">Status</div>
-                                <div class="status-value" id="training-status">Idle</div>
-                            </div>
-                        </div>
-
-                        <!-- Configuration Section -->
-                        <div class="config-section">
-                            <h3>Configuration</h3>
-                            <div class="form-group">
-                                <label for="generations">Generations:</label>
-                                <div class="generations-group">
-                                    <input type="number" id="generations" min="1" max="1000" value="100">
-                                    <label class="checkbox-label" style="margin-left: 10px;">
-                                        <input type="checkbox" id="infinite-generations">
-                                        Infinite
-                                    </label>
-                                </div>
-                            </div>
-                            <div class="form-group">
-                                <label for="population-size">Population Size:</label>
-                                <input type="number" id="population-size" min="10" max="500" value="50">
-                            </div>
-                            <div class="form-group">
-                                <label for="mutation-rate">Mutation Rate:</label>
-                                <input type="range" id="mutation-rate" min="0" max="100" value="50">
-                                <span id="mutation-rate-display">50%</span>
-                            </div>
-                            <div class="form-group">
-                                <label>Stopping Criteria:</label>
-                                <div class="toggle-group">
-                                    <label class="radio-label">
-                                        <input type="radio" name="stopping-criteria" value="best" checked>
-                                        Stop on Best Compression
-                                    </label>
-                                    <label class="radio-label">
-                                        <input type="radio" name="stopping-criteria" value="success">
-                                        Stop on Success Compression
-                                    </label>
-                                </div>
-                            </div>
-                        </div>
-
-                        <!-- Control Buttons -->
-                        <div class="button-group">
-                            <button class="btn btn-primary" id="btn-start">
-                                <span>▶</span> Start Training
-                            </button>
-                            <button class="btn btn-danger" id="btn-stop" disabled>
-                                <span>⏹</span> Stop Training
-                            </button>
-                            <button class="btn btn-secondary" id="btn-reset">
-                                <span>🔄</span> Reset Data
-                            </button>
-                        </div>
-
-                        <!-- Checkpoint Controls -->
-                        <div class="checkpoint-controls">
-                            <h3>Checkpoint Management</h3>
-                            <div class="checkpoint-actions">
-                                <input type="text" id="checkpoint-name" placeholder="Checkpoint name (optional)" class="checkpoint-input">
-                                <button class="btn btn-secondary" id="btn-save-checkpoint">
-                                    <span>💾</span> Save Checkpoint
-                                </button>
-                                <button class="btn btn-secondary" id="btn-view-checkpoints">
-                                    <span>📋</span> View Checkpoints
-                                </button>
-                            </div>
-                        </div>
+            <!-- LEFT: Chart (takes most space) -->
+            <div class="chart-panel">
+                <div class="panel-header">
+                    <h3>📊 Generation Progress</h3>
+                    <div class="panel-actions">
+                        <button class="btn-icon" id="graph-refresh" title="Refresh">↻</button>
+                        <button class="btn-icon" id="graph-fullscreen" title="Fullscreen">⛶</button>
                     </div>
                 </div>
-
-                <!-- Real-time Metrics Card -->
-                <div class="card metrics-card">
-                    <div class="card-header">
-                        <h3>Real-time Metrics</h3>
-                    </div>
-                    <div class="card-body metrics-body">
-                        <div class="metrics-grid">
-                            <div class="metric-item">
-                                <span class="metric-label">Fitness:</span>
-                                <span class="metric-value" id="metric-fitness">0.0000</span>
-                            </div>
-                            <div class="metric-item">
-                                <span class="metric-label">Compression:</span>
-                                <span class="metric-value" id="metric-compression">45.00%</span>
-                            </div>
-                            <div class="metric-item">
-                                <span class="metric-label">File Size:</span>
-                                <span class="metric-value" id="metric-file-size">0.0 MB</span>
-                            </div>
-                            <div class="metric-item">
-                                <span class="metric-label">Evolution Time:</span>
-                                <span class="metric-value" id="metric-evo-time">0.00s</span>
-                            </div>
-                            <div class="metric-item">
-                                <span class="metric-label">Method Count:</span>
-                                <span class="metric-value" id="metric-method-count">0</span>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Checkpoints Modal -->
-                <div id="checkpoints-modal" class="modal" style="display: none;">
-                    <div class="modal-content">
-                        <div class="modal-header">
-                            <h3>Saved Checkpoints</h3>
-                            <button class="modal-close" id="modal-close">&times;</button>
-                        </div>
-                        <div class="modal-body">
-                            <div id="checkpoints-list" class="checkpoints-list">
-                                <p>No checkpoints saved yet</p>
-                            </div>
-                        </div>
-                    </div>
+                <div class="chart-wrapper">
+                    <canvas id="fitnessChart"></canvas>
                 </div>
             </div>
 
-            <!-- Logs Tab -->
-            <div class="tab-content" id="logs-tab">
-                <div class="card">
-                    <div class="card-header">
-                        <h2>Live Logs</h2>
-                        <div class="log-controls">
-                            <select id="log-filter" class="log-filter">
-                                <option value="">All Levels</option>
-                                <option value="INFO">Info</option>
-                                <option value="WARNING">Warning</option>
-                                <option value="ERROR">Error</option>
-                                <option value="DEBUG">Debug</option>
+            <!-- RIGHT: Sidebar panels -->
+            <div class="sidebar">
+                <!-- Complexity Breakdown -->
+                <div class="sidebar-card">
+                    <div class="sidebar-card-header">🧠 Complexity &amp; Scaling</div>
+                    <div class="sidebar-card-body">
+                        <div class="complexity-bar-container">
+                            <div class="complexity-bar" id="complexity-bar" style="width: 5%;">
+                                <span id="complexity-bar-label">VERY SIMPLE</span>
+                            </div>
+                        </div>
+                        <div class="complexity-details">
+                            <div class="detail-row">
+                                <span>Pattern Tier</span>
+                                <span id="detail-pattern-tier" class="detail-val">VERY SIMPLE</span>
+                            </div>
+                            <div class="detail-row">
+                                <span>Size Tier Budget</span>
+                                <span id="detail-tier-budget" class="detail-val">5 MB</span>
+                            </div>
+                            <div class="detail-row">
+                                <span>Per-Item Ceiling</span>
+                                <span id="detail-tier-ceiling" class="detail-val">256 KB</span>
+                            </div>
+                            <div class="detail-row">
+                                <span>Compression Target</span>
+                                <span id="detail-compression-target" class="detail-val">—</span>
+                            </div>
+                            <div class="detail-row">
+                                <span>Methods Available</span>
+                                <span id="metric-method-count" class="detail-val">0</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Anti-Corruption & Decompression -->
+                <div class="sidebar-card">
+                    <div class="sidebar-card-header">🛡️ Anti-Corruption &amp; Decompression</div>
+                    <div class="sidebar-card-body">
+                        <div class="complexity-details">
+                            <div class="detail-row">
+                                <span>Training Phase</span>
+                                <span id="detail-training-phase" class="detail-val">—</span>
+                            </div>
+                            <div class="detail-row">
+                                <span>Corruption Level</span>
+                                <span id="detail-corruption-level" class="detail-val">0.000</span>
+                            </div>
+                            <div class="detail-row">
+                                <span>Best Robustness</span>
+                                <span id="detail-robustness" class="detail-val">0.0000</span>
+                            </div>
+                            <div class="detail-row">
+                                <span>Items Evaluated</span>
+                                <span id="detail-items-evaluated" class="detail-val">0</span>
+                            </div>
+                            <div class="detail-row">
+                                <span>Successful Compressions</span>
+                                <span id="detail-successful-comp" class="detail-val">0</span>
+                            </div>
+                            <div class="detail-row">
+                                <span>Decomp Mismatches</span>
+                                <span id="detail-decomp-mismatches" class="detail-val">0</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Method Performance -->
+                <div class="sidebar-card">
+                    <div class="sidebar-card-header">🧬 Method Performance</div>
+                    <div class="sidebar-card-body">
+                        <div class="detail-row">
+                            <span>Novel Pipeline</span>
+                            <span id="detail-novel-pipeline" class="detail-val">none</span>
+                        </div>
+                        <div id="method-stats-grid" class="method-stats-grid">
+                            <div class="method-stat-row method-neutral">No method data yet</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Quick Config -->
+                <div class="sidebar-card">
+                    <div class="sidebar-card-header">⚙️ Configuration</div>
+                    <div class="sidebar-card-body compact-form">
+                        <div class="form-row">
+                            <label for="generations">Gens:</label>
+                            <input type="number" id="generations" min="1" max="10000" value="100">
+                            <label class="checkbox-inline"><input type="checkbox" id="infinite-generations"> ∞</label>
+                        </div>
+                        <div class="form-row">
+                            <label for="population-size">Pop:</label>
+                            <input type="number" id="population-size" min="10" max="500" value="50">
+                        </div>
+                        <div class="form-row">
+                            <label for="batch-size">Batch:</label>
+                            <input type="number" id="batch-size" min="1" max="500" value="10">
+                        </div>
+                        <div class="form-row">
+                            <label for="device-select">Device:</label>
+                            <select id="device-select" class="form-control" style="flex:1;">
+                                <option value="GPU_AUTO" selected>GPU (Auto)</option>
+                                <option value="CPU">CPU Only</option>
                             </select>
-                            <button class="btn btn-small" id="btn-clear-logs">Clear</button>
-                            <label class="checkbox-label">
-                                <input type="checkbox" id="auto-scroll" checked>
-                                Auto-scroll
-                            </label>
+                        </div>
+                        <div class="form-row">
+                            <label for="cpu-workers">Workers:</label>
+                            <input type="number" id="cpu-workers" min="1" max="32" value="4" title="CPU worker processes for parallel evaluation">
+                        </div>
+                        <div class="form-row">
+                            <label for="mutation-rate">Mut:</label>
+                            <input type="range" id="mutation-rate" min="0" max="100" value="50" class="range-input">
+                            <span id="mutation-rate-display" class="range-val">50%</span>
                         </div>
                     </div>
-                    <div class="card-body">
-                        <div class="log-container" id="log-container">
-                            <div class="log-entry log-info">
-                                <span class="log-time">00:00:00</span>
-                                <span class="log-level">INFO</span>
-                                <span class="log-message">Ready to start training...</span>
-                            </div>
+                </div>
+
+                <!-- Checkpoints -->
+                <div class="sidebar-card">
+                    <div class="sidebar-card-header">💾 Checkpoints</div>
+                    <div class="sidebar-card-body compact-form">
+                        <div class="form-row">
+                            <input type="text" id="checkpoint-name" placeholder="Name (optional)" style="flex:1;">
+                        </div>
+                        <div class="btn-row">
+                            <button class="btn btn-sm btn-secondary" id="btn-save-checkpoint">Save</button>
+                            <button class="btn btn-sm btn-secondary" id="btn-view-checkpoints">View</button>
+                            <button class="btn btn-sm btn-secondary" id="btn-reset">🔄 Reset</button>
                         </div>
                     </div>
                 </div>
             </div>
+        </div>
 
-            <!-- Compression Methods Tab -->
-            <div class="tab-content" id="compression-tab">
-                <div class="card">
-                    <div class="card-header">
-                        <h2>Compression Methods</h2>
-                        <div class="method-stats">
-                            <span>Total Methods: <strong id="total-methods">0</strong></span>
-                            <span>Novel Methods: <strong id="novel-methods">0</strong></span>
+        <!-- ---- ROW 3: Tabs (full width) ---- -->
+        <div class="tabs-section">
+            <div class="tabs-header">
+                <button class="tab-btn active" data-tab="population">
+                    <span class="tab-icon">🧬</span> Population
+                </button>
+                <button class="tab-btn" data-tab="logs">
+                    <span class="tab-icon">📜</span> Logs
+                </button>
+                <button class="tab-btn" data-tab="compression">
+                    <span class="tab-icon">📦</span> Methods
+                </button>
+                <button class="tab-btn" data-tab="validation">
+                    <span class="tab-icon">🧪</span> Validation
+                </button>
+                <button class="tab-btn" data-tab="settings">
+                    <span class="tab-icon">⚙️</span> Settings
+                </button>
+            </div>
+
+            <div class="tabs-container">
+
+                <!-- POPULATION TAB -->
+                <div class="tab-content active" id="population-tab">
+                    <!-- Live population + Generation history viewer -->
+                    <div class="pop-controls">
+                        <div class="pop-controls-left">
+                            <span class="pop-label">Generations</span>
+                            <button class="btn btn-sm btn-secondary" id="pop-page-prev" title="Previous page">◀</button>
+                            <span id="pop-page-info" class="pop-page-info">Page 1 / 1</span>
+                            <button class="btn btn-sm btn-secondary" id="pop-page-next" title="Next page">▶</button>
+                            <span class="pop-label" style="margin-left:12px;">20 gens/page</span>
+                        </div>
+                        <div class="pop-controls-right">
+                            <button class="btn btn-sm btn-secondary" id="pop-expand-all" title="Expand all">Expand All</button>
+                            <button class="btn btn-sm btn-secondary" id="pop-collapse-all" title="Collapse all">Collapse All</button>
                         </div>
                     </div>
-                    <div class="card-body">
-                        <div class="methods-grid" id="methods-grid">
-                            <div class="loading">Loading compression methods...</div>
+                    <div id="population-history-container" class="population-history-container">
+                        <div class="placeholder-cell" style="padding:24px;text-align:center;">Waiting for data...</div>
+                    </div>
+                </div>
+
+                <!-- LOGS TAB -->
+                <div class="tab-content" id="logs-tab">
+                    <div class="log-toolbar">
+                        <select id="log-filter" class="log-filter">
+                            <option value="">All Levels</option>
+                            <option value="INFO">Info</option>
+                            <option value="WARNING">Warning</option>
+                            <option value="ERROR">Error</option>
+                        </select>
+                        <button class="btn btn-sm btn-secondary" id="btn-clear-logs">Clear</button>
+                        <label class="checkbox-inline"><input type="checkbox" id="auto-scroll" checked> Auto-scroll</label>
+                    </div>
+                    <div class="log-container" id="log-container">
+                        <div class="log-entry log-info">
+                            <span class="log-level">[INFO]</span>
+                            <span class="log-message">Ready to start training...</span>
                         </div>
                     </div>
                 </div>
-            </div>
 
-            <!-- Settings Tab -->
-            <div class="tab-content" id="settings-tab">
-                <div class="card">
-                    <div class="card-header">
-                        <h2>Settings & Information</h2>
+                <!-- COMPRESSION METHODS TAB -->
+                <div class="tab-content" id="compression-tab">
+                    <div class="methods-header">
+                        <span>Total: <strong id="total-methods">0</strong></span>
+                        <span>Novel: <strong id="novel-methods">0</strong></span>
                     </div>
-                    <div class="card-body">
-                        <!-- System Information -->
-                        <!-- Validation Results Section -->
-                        <div class="settings-section">
-                            <h3>AI Compression Validation (Gen 50)</h3>
-                            <div id="validation-container" class="validation-container">
-                                <div id="validation-pending" class="validation-pending">
-                                    <p>⏳ Validation runs at generation 50...</p>
-                                    <p class="validation-subtext">Start training to trigger validation checkpoint</p>
-                                </div>
-                                <div id="validation-results" class="validation-results" style="display:none;">
-                                    <div class="validation-header">
-                                        <div class="validation-badge" id="validation-badge"></div>
-                                        <div class="validation-title">
-                                            <h4 id="validation-title"></h4>
-                                            <p id="validation-subtitle" class="validation-subtext"></p>
-                                        </div>
-                                    </div>
-                                    <div class="validation-metrics">
-                                        <div class="metric-row">
-                                            <span class="metric-label">Original Data Size:</span>
-                                            <span class="metric-value" id="val-original-size">—</span>
-                                        </div>
-                                        <div class="metric-row">
-                                            <span class="metric-label">AI Compressed Size:</span>
-                                            <span class="metric-value" id="val-ai-size">—</span>
-                                        </div>
-                                        <div class="metric-row">
-                                            <span class="metric-label">Best Baseline Size:</span>
-                                            <span class="metric-value" id="val-baseline-size">—</span>
-                                        </div>
-                                        <div class="metric-row">
-                                            <span class="metric-label">Baseline Method:</span>
-                                            <span class="metric-value" id="val-baseline-method">—</span>
-                                        </div>
-                                        <div class="metric-row highlight">
-                                            <span class="metric-label">AI Improvement:</span>
-                                            <span class="metric-value" id="val-improvement">—</span>
-                                        </div>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
+                    <div class="methods-grid" id="methods-grid">
+                        <div class="loading">Loading compression methods...</div>
+                    </div>
+                </div>
 
-                        <div class="settings-section">
-                            <h3>System Information</h3>
-                            <div class="info-table">
-                                <div class="info-row">
-                                    <span class="info-label">Application Version:</span>
-                                    <span class="info-value">{{ version }}</span>
-                                </div>
-                                <div class="info-row">
-                                    <span class="info-label">Server Host:</span>
-                                    <span class="info-value" id="server-host">localhost:5000</span>
-                                </div>
-                                <div class="info-row">
-                                    <span class="info-label">Last Updated:</span>
-                                    <span class="info-value" id="last-update">Never</span>
-                                </div>
-                            </div>
-                        </div>
-
-                        <!-- Graph Settings -->
-                        <div class="settings-section">
-                            <h3>Display Settings</h3>
-                            <div class="form-group">
-                                <label for="theme-selector">Theme - Click to Preview & Select:</label>
-                                <select id="theme-selector" class="theme-selector" style="display:none;">
-                                    <option value="Nordic Dark (Default)">Nordic Dark (Default)</option>
-                                    <option value="Dracula">Dracula</option>
-                                    <option value="Solarized Light">Solarized Light</option>
-                                    <option value="Monokai Pro">Monokai Pro</option>
-                                    <option value="Oceanic Next">Oceanic Next</option>
-                                    <option value="GitHub Dark">GitHub Dark</option>
-                                    <option value="Zenburn">Zenburn</option>
-                                    <option value="Material Darker">Material Darker</option>
-                                    <option value="Gruvbox Dark">Gruvbox Dark</option>
-                                    <option value="Tomorrow Night Blue">Tomorrow Night Blue</option>
-                                    <option value="Forest Green">Forest Green</option>
-                                    <option value="Crimson Night">Crimson Night</option>
-                                    <option value="Electric Blue">Electric Blue</option>
-                                    <option value="Golden Sand">Golden Sand</option>
-                                    <option value="Neon Glow">Neon Glow</option>
-                                    <option value="Matrix Green">Matrix Green</option>
-                                    <option value="Sunset Orange">Sunset Orange</option>
-                                    <option value="Lavender Dream">Lavender Dream</option>
-                                    <option value="Paper White">Paper White</option>
-                                    <option value="Coffee House">Coffee House</option>
+                <!-- VALIDATION TAB -->
+                <div class="tab-content" id="validation-tab">
+                    <div class="validation-layout">
+                        <div class="validation-controls">
+                            <label>1. Select Checkpoint</label>
+                            <div class="inline-group">
+                                <select id="validation-checkpoint-select" class="form-control">
+                                    <option>Loading checkpoints...</option>
                                 </select>
-                                <div id="theme-preview-grid" class="theme-preview-grid"></div>
+                                <button onclick="loadValidationCheckpoints()" class="btn btn-sm btn-secondary">↻</button>
                             </div>
-                            <div class="form-group">
-                                <label class="checkbox-label">
-                                    <input type="checkbox" id="show-grid" checked>
-                                    Show Grid on Graphs
-                                </label>
-                            </div>
-                            <div class="form-group">
-                                <label for="refresh-interval">Log Refresh Interval (ms):</label>
-                                <input type="number" id="refresh-interval" min="100" max="10000" value="1000">
-                            </div>
+                            <label>2. Upload Test File</label>
+                            <input type="file" id="test-file-upload" class="form-control"/>
+                            <button onclick="testCheckpoint()" class="btn btn-sm btn-primary" style="margin-top:8px;">🧪 Run Test</button>
                         </div>
-
-                        <!-- Export Options -->
-                        <div class="settings-section">
-                            <h3>Data Export</h3>
-                            <div class="button-group">
-                                <button class="btn btn-secondary" id="btn-export-logs">
-                                    📥 Export Logs
-                                </button>
-                                <button class="btn btn-secondary" id="btn-export-metrics">
-                                    📥 Export Metrics
-                                </button>
+                        <div id="validation-results" class="validation-results-area">
+                            <div class="placeholder-center">
+                                <div style="font-size:2rem;">📊</div>
+                                Results will appear here
                             </div>
                         </div>
                     </div>
+                </div>
+
+                <!-- SETTINGS TAB -->
+                <div class="tab-content" id="settings-tab">
+                    <div class="settings-grid">
+                        <div class="settings-col">
+                            <h4>System</h4>
+                            <div class="info-row"><span>Version:</span><span>{{ version }}</span></div>
+                            <div class="info-row"><span>Server:</span><span id="server-host">localhost:5001</span></div>
+                            <div class="info-row"><span>Updated:</span><span id="last-update">Never</span></div>
+                        </div>
+                        <div class="settings-col">
+                            <h4>Display</h4>
+                            <div style="display:none;"><select id="theme-selector">
+                                <option value="Nordic Dark (Default)">Nordic Dark (Default)</option>
+                                <option value="Dracula">Dracula</option>
+                                <option value="Solarized Light">Solarized Light</option>
+                                <option value="Monokai Pro">Monokai Pro</option>
+                                <option value="Oceanic Next">Oceanic Next</option>
+                                <option value="GitHub Dark">GitHub Dark</option>
+                                <option value="Zenburn">Zenburn</option>
+                                <option value="Material Darker">Material Darker</option>
+                                <option value="Gruvbox Dark">Gruvbox Dark</option>
+                                <option value="Tomorrow Night Blue">Tomorrow Night Blue</option>
+                                <option value="Forest Green">Forest Green</option>
+                                <option value="Crimson Night">Crimson Night</option>
+                                <option value="Electric Blue">Electric Blue</option>
+                                <option value="Golden Sand">Golden Sand</option>
+                                <option value="Neon Glow">Neon Glow</option>
+                                <option value="Matrix Green">Matrix Green</option>
+                                <option value="Sunset Orange">Sunset Orange</option>
+                                <option value="Lavender Dream">Lavender Dream</option>
+                                <option value="Paper White">Paper White</option>
+                                <option value="Coffee House">Coffee House</option>
+                            </select></div>
+                            <div id="theme-preview-grid" class="theme-preview-grid"></div>
+                            <label class="checkbox-inline" style="margin-top:8px;"><input type="checkbox" id="show-grid" checked> Show Grid</label>
+                            <div class="form-row" style="margin-top:8px;">
+                                <label for="refresh-interval">Log Refresh (ms):</label>
+                                <input type="number" id="refresh-interval" min="100" max="10000" value="1000" style="width:80px;">
+                            </div>
+                        </div>
+                        <div class="settings-col">
+                            <h4>Export</h4>
+                            <div class="btn-row">
+                                <button class="btn btn-sm btn-secondary" id="btn-export-logs">📥 Logs</button>
+                                <button class="btn btn-sm btn-secondary" id="btn-export-metrics">📥 Metrics</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+            </div>
+        </div>
+    </div>
+
+    <!-- Checkpoints Modal -->
+    </div><!-- /dashboard-top-tab -->
+
+    <!-- ====== TAB 2: EVOLUTION DEEP DIVE ====== -->
+    <div class="top-tab-content" id="deep-dive-top-tab">
+        <div class="deep-dive-layout">
+
+            <!-- Deep Dive Header KPIs -->
+            <div class="dd-kpi-strip">
+                <div class="kpi-card">
+                    <div class="kpi-label">Gene Pools</div>
+                    <div class="kpi-value" id="dd-pool-count">0</div>
+                </div>
+                <div class="kpi-card accent-green">
+                    <div class="kpi-label">Best Overall</div>
+                    <div class="kpi-value" id="dd-best-fitness">0.0000</div>
+                </div>
+                <div class="kpi-card accent-amber">
+                    <div class="kpi-label">Mutation Rate</div>
+                    <div class="kpi-value" id="dd-mutation-rate">0%</div>
+                </div>
+                <div class="kpi-card accent-cyan">
+                    <div class="kpi-label">Stagnation</div>
+                    <div class="kpi-value" id="dd-stagnation">0</div>
+                    <div class="kpi-sub">generations</div>
+                </div>
+            </div>
+
+            <!-- Main Deep Dive Row: Charts + Gene Pool -->
+            <div class="dd-main-row">
+
+                <!-- LEFT: Generation Fitness Chart -->
+                <div class="chart-panel">
+                    <div class="panel-header">
+                        <h3>📈 Generation Fitness & Mutations</h3>
+                        <div class="panel-actions">
+                            <button class="btn-icon" id="dd-chart-refresh" title="Refresh">↻</button>
+                        </div>
+                    </div>
+                    <div class="chart-wrapper">
+                        <canvas id="ddFitnessChart"></canvas>
+                    </div>
+                </div>
+
+                <!-- RIGHT: Gene Pool Legend + Top Agents -->
+                <div class="dd-sidebar">
+                    <div class="sidebar-card">
+                        <div class="sidebar-card-header">🧬 Gene Pools</div>
+                        <div class="sidebar-card-body" id="dd-gene-pool-legend" style="max-height:200px;overflow-y:auto;">
+                            <div class="placeholder-cell">Waiting for data...</div>
+                        </div>
+                    </div>
+                    <div class="sidebar-card">
+                        <div class="sidebar-card-header">🏆 Top Agents (All Time)</div>
+                        <div class="sidebar-card-body" id="dd-top-agents" style="max-height:250px;overflow-y:auto;">
+                            <div class="placeholder-cell">Waiting for data...</div>
+                        </div>
+                    </div>
+                </div>
+
+            </div>
+
+            <!-- Gene Pool Grid Visualization -->
+            <div class="dd-section">
+                <div class="panel-header">
+                    <h3>🎨 Agent Gene Pool Map</h3>
+                    <div class="panel-actions">
+                        <label class="checkbox-inline" style="margin-right:12px;">
+                            <input type="checkbox" id="dd-show-fitness" checked> Show Fitness
+                        </label>
+                        <div class="dd-gen-nav">
+                            <button class="btn btn-sm btn-secondary" id="dd-gen-prev">◀</button>
+                            <span id="dd-gen-label" class="pop-page-info">Latest</span>
+                            <button class="btn btn-sm btn-secondary" id="dd-gen-next">▶</button>
+                        </div>
+                    </div>
+                </div>
+                <div id="dd-gene-pool-grid" class="dd-gene-pool-grid">
+                    <div class="placeholder-cell" style="padding:40px;text-align:center;">Start training to see agents...</div>
+                </div>
+                <div class="dd-grid-lineage-info" id="dd-lineage-info" style="display:none;">
+                    <div class="dd-lineage-bar">
+                        <span class="dd-lineage-label">🔍 Lineage for:</span>
+                        <span class="dd-lineage-agent-id" id="dd-lineage-agent-id"></span>
+                        <span class="dd-lineage-legend">
+                            <span class="dd-lineage-key parent">■ Parents</span>
+                            <span class="dd-lineage-key child">■ Children</span>
+                            <span class="dd-lineage-key sibling">■ Siblings</span>
+                            <span class="dd-lineage-key selected">■ Selected</span>
+                        </span>
+                        <button class="btn btn-sm btn-secondary" id="dd-lineage-clear" title="Clear selection">✕</button>
+                    </div>
+                </div>
+                <!-- Lineage Detail Panel — shows parents, grandparents, children, siblings -->
+                <div class="dd-lineage-detail-panel" id="dd-lineage-detail" style="display:none;">
+                </div>
+            </div>
+
+            <!-- Breeding Network Visualization -->
+            <div class="dd-section">
+                <div class="panel-header">
+                    <h3>🔗 Breeding Network</h3>
+                    <div class="panel-actions">
+                        <span class="dd-breed-net-stat" id="dd-cross-pool-stat" title="Cross-pool breeding events"></span>
+                    </div>
+                </div>
+                <div class="dd-breed-network-layout">
+                    <!-- LEFT: Breeding Flow Canvas -->
+                    <div class="dd-breed-flow-panel">
+                        <div class="dd-breed-flow-header">
+                            <span>Generation Breeding Flow</span>
+                            <span class="dd-breed-flow-gen" id="dd-breed-flow-gen-label">Latest</span>
+                        </div>
+                        <div class="dd-breed-flow-canvas-wrap" id="dd-breed-flow-wrap">
+                            <svg id="dd-breed-flow-svg" class="dd-breed-flow-svg"></svg>
+                            <div class="placeholder-cell" id="dd-breed-flow-placeholder" style="padding:40px;text-align:center;">Select a generation to see breeding flow</div>
+                        </div>
+                    </div>
+                    <!-- CENTER: Pool Breeding Matrix -->
+                    <div class="dd-pool-matrix-panel">
+                        <div class="dd-pool-matrix-header">Pool × Pool Breeding</div>
+                        <div id="dd-pool-matrix" class="dd-pool-matrix">
+                            <div class="placeholder-cell" style="padding:20px;text-align:center;font-size:11px;">No data</div>
+                        </div>
+                    </div>
+                    <!-- RIGHT: Top Breeders -->
+                    <div class="dd-top-breeders-panel">
+                        <div class="dd-top-breeders-header">🏅 Top Breeders</div>
+                        <div id="dd-top-breeders" class="dd-top-breeders">
+                            <div class="placeholder-cell" style="padding:20px;text-align:center;font-size:11px;">No data</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Method Direction Tracker -->
+            <div class="dd-section">
+                <div class="panel-header">
+                    <h3>🧭 Method Direction</h3>
+                    <div class="panel-actions">
+                        <span style="font-size:11px;color:var(--text-muted);">How compression parameters evolve</span>
+                    </div>
+                </div>
+                <div class="dd-method-direction-layout">
+                    <div class="dd-method-chart-wrap">
+                        <canvas id="ddMethodChart"></canvas>
+                    </div>
+                    <div class="dd-method-summary" id="dd-method-summary">
+                        <div class="placeholder-cell" style="padding:20px;text-align:center;font-size:11px;">Waiting for data...</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Breeding Relationships & Generation Details -->
+            <div class="dd-section">
+                <div class="panel-header">
+                    <h3>💑 Breeding & Mutations Detail</h3>
+                    <div class="panel-actions">
+                        <button class="btn btn-sm btn-secondary" id="dd-page-prev">◀</button>
+                        <span id="dd-page-info" class="pop-page-info">Page 1 / 1</span>
+                        <button class="btn btn-sm btn-secondary" id="dd-page-next">▶</button>
+                    </div>
+                </div>
+                <div id="dd-generations-container" class="dd-generations-container">
+                    <div class="placeholder-cell" style="padding:24px;text-align:center;">Waiting for data...</div>
                 </div>
             </div>
 
         </div>
     </div>
 
-    <!-- Scripts -->
+    <!-- Checkpoints Modal -->
+    <div id="checkpoints-modal" class="modal" style="display:none;">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Saved Checkpoints</h3>
+                <button class="modal-close" id="modal-close">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div id="checkpoints-list" class="checkpoints-list">
+                    <p>No checkpoints saved yet</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <script src="{{ url_for('static', filename='js/charts.js') }}"></script>
     <script src="{{ url_for('static', filename='js/logger.js') }}"></script>
     <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/deep_dive.js') }}"></script>
 </body>
 </html>

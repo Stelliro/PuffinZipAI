@@ -24,4 +24,4 @@ if EvolutionaryOptimizer is not None:
 if EvolvingAgent is not None:
     __all__.append("EvolvingAgent")
 
-__version__ = "0.2.4"
+__version__ = "0.9.7"

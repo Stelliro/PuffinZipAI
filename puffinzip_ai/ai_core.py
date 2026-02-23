@@ -1,4 +1,6 @@
 # PuffinZipAI_Project/puffinzip_ai/ai_core.py
+from __future__ import annotations
+
 import logging
 import os
 import queue
@@ -48,22 +50,57 @@ class PuffinZipAI:
                  exploration_rate=None,
                  exploration_decay_rate=None,
                  min_exploration_rate=None,
-                 rle_min_encodable_run: int = None,
-                 target_device: str = None):
+                 rle_min_encodable_run: int | None = None,
+                 rle_min_encodable_run_length: int | None = None,
+                 target_device: str | None = None,
+                 **kwargs):
 
         log_file_full_path = os.path.join(LOGS_DIR_PATH, CORE_AI_LOG_FILENAME)
+        
+        # --- FIX: WINERROR 32 (LOG ROTATION) ---
+        # Use a constant logger name so all agents share ONE logger instance.
+        # This prevents opening 50+ file handles to the same file.
+        shared_logger_name = 'PuffinZipAI_Core_Shared'
+        
         try:
-            self.logger = setup_logger(logger_name=f'PuffinZipAI_Core_{id(self)}', log_filename=log_file_full_path,
-                                       log_level=logging.INFO)
+            # Check if this logger already exists and has handlers (initialized by another agent)
+            existing_logger = logging.getLogger(shared_logger_name)
+            if existing_logger.handlers:
+                self.logger = existing_logger
+            else:
+                # First time initialization
+                self.logger = setup_logger(logger_name=shared_logger_name, 
+                                         log_filename=log_file_full_path,
+                                         log_level=logging.INFO)
         except Exception as e_log:
             print(f"CRITICAL: Failed to setup logger in PuffinZipAI: {e_log}. Using print/DummyLogger.")
             self.logger = DummyLogger()
 
         self.len_thresholds = list(len_thresholds) if len_thresholds is not None else list(DEFAULT_LEN_THRESHOLDS)
-        self.action_names = {0: "RLE", 1: "NoCompression", 2: "AdvancedRLE"}
+        self.action_names = {0: "RLE", 1: "NoCompression", 2: "AdvancedRLE", 3: "NovelMethod", 4: "ReferenceMethod"}
         self.action_space_size = len(self.action_names)
         self.gui_stop_event = None
         self.gui_output_queue = None
+
+        # Novel compression method — unique per agent, evolved via genetic operators
+        self.novel_method = None  # Will be a CompressionMethod from NovelCompressionGenerator
+        self._novel_compress_fn = None
+        self._novel_decompress_fn = None
+
+        # Scaffolding — reference method access (training wheels)
+        self._scaffolding_enabled = True
+        self._preferred_reference = "gzip"  # default reference method
+        self._reference_compress_fn = None
+        self._reference_decompress_fn = None
+        self._scaffold_agent_id = None  # set by EvolvingAgent wrapper
+        try:
+            from .compression_scaffolding import get_reference_method
+            ref = get_reference_method(self._preferred_reference)
+            if ref:
+                self._reference_compress_fn = ref.compress_fn
+                self._reference_decompress_fn = ref.decompress_fn
+        except ImportError:
+            self._scaffolding_enabled = False
 
         self.learning_rate = learning_rate if learning_rate is not None else DEFAULT_LEARNING_RATE
         self.discount_factor = discount_factor if discount_factor is not None else DEFAULT_DISCOUNT_FACTOR
@@ -81,15 +118,19 @@ class PuffinZipAI:
             f"(Actual GPU ops depend on PuffinZipAI_GPU class and libraries)."
         )
 
-        if rle_min_encodable_run is not None and isinstance(rle_min_encodable_run, int) and rle_min_encodable_run >= 1:
-            self.rle_min_encodable_run_length = rle_min_encodable_run
+        effective_rle_min = rle_min_encodable_run
+        if effective_rle_min is None:
+            effective_rle_min = rle_min_encodable_run_length
+
+        if effective_rle_min is not None and isinstance(effective_rle_min, int) and effective_rle_min >= 1:
+            self.rle_min_encodable_run_length = effective_rle_min
         else:
             try:
                 from .rle_utils import MIN_ENCODABLE_RUN_LENGTH as RLE_GLOBAL_DEFAULT_MIN_RUN
-                self.rle_min_encodable_run_length = RLE_GLOBAL_DEFAULT_MIN_RUN
+                self.rle_min_encodable_run_length = max(6, RLE_GLOBAL_DEFAULT_MIN_RUN)
             except ImportError:
-                self.logger.warning("Could not import RLE_GLOBAL_DEFAULT_MIN_RUN. Simple RLE min_run defaulting to 3.")
-                self.rle_min_encodable_run_length = 3
+                self.logger.warning("Could not import RLE_GLOBAL_DEFAULT_MIN_RUN. Simple RLE min_run defaulting to 6.")
+                self.rle_min_encodable_run_length = 6
 
         self.logger.info(
             f"PuffinZipAI params: SimpleRLE_MinRun: {self.rle_min_encodable_run_length}, LR: {self.learning_rate:.4f}, "
@@ -144,6 +185,7 @@ class PuffinZipAI:
         return {
             'total_items_processed': 0, 'cumulative_reward': 0.0, 'decomp_errors': 0,
             'rle_chosen_count': 0, 'nocomp_chosen_count': 0, 'advanced_rle_chosen_count': 0,
+            'novel_method_chosen_count': 0, 'reference_method_chosen_count': 0,
             'reward_history': []
         }
 
@@ -235,10 +277,36 @@ class PuffinZipAI:
 
     def _choose_action(self, state_idx, use_exploration=True):
         action_idx = 0
+        # Determine effective action space:
+        # - Actions 0-2 always available (RLE, NoCompression, AdvancedRLE)
+        # - Action 3 (NovelMethod) only if agent has a novel compress fn
+        # - Action 4 (ReferenceMethod) only if scaffolding enabled + not banned
+        effective_action_count = 3  # base: RLE, NoCompression, AdvancedRLE
+        if self._novel_compress_fn:
+            effective_action_count = 4  # include NovelMethod
+        if self._scaffolding_enabled and self._reference_compress_fn:
+            # Check ban status via scaffolding manager
+            ref_allowed = True
+            try:
+                from .compression_scaffolding import get_scaffolding_manager
+                agent_id = self._scaffold_agent_id or id(self)
+                ref_allowed = get_scaffolding_manager().is_reference_allowed(
+                    str(agent_id), getattr(self, '_current_generation', 0)
+                )
+            except ImportError:
+                pass
+            if ref_allowed:
+                # Only include ReferenceMethod (idx 4) if NovelMethod (idx 3) is also
+                # available, otherwise action 3 would be an unusable gap in the space.
+                if effective_action_count >= 4:  # novel method available
+                    effective_action_count = 5  # include ReferenceMethod at idx 4
+                # If novel method not available (effective=3), don't expand to 5
+                # because action 3 (NovelMethod) has no handler and would be wasted.
         if use_exploration and random.random() < self.exploration_rate:
-            action_idx = random.randint(0, self.action_space_size - 1)
+            action_idx = random.randint(0, effective_action_count - 1)
         else:
-            action_idx = np.argmax(self.q_table[state_idx])
+            q_row = self.q_table[state_idx][:effective_action_count]
+            action_idx = int(np.argmax(q_row))
         if use_exploration:
             if action_idx == 0:
                 self.training_stats['rle_chosen_count'] += 1
@@ -246,81 +314,104 @@ class PuffinZipAI:
                 self.training_stats['nocomp_chosen_count'] += 1
             elif action_idx == 2:
                 self.training_stats['advanced_rle_chosen_count'] += 1
+            elif action_idx == 3:
+                self.training_stats['novel_method_chosen_count'] += 1
+            elif action_idx == 4:
+                self.training_stats['reference_method_chosen_count'] = self.training_stats.get('reference_method_chosen_count', 0) + 1
         return action_idx
 
-    def _update_q_table(self, state_idx, action_idx, reward_val):
-        current_q = self.q_table[state_idx, action_idx];
-        new_q = current_q + self.learning_rate * (reward_val - current_q);
+    def _update_q_table(self, state_idx, action_idx, reward_val, next_state_idx=None):
+        current_q = self.q_table[state_idx, action_idx]
+        # Proper TD(0) Q-learning: Q(s,a) += lr * (r + gamma * max_a' Q(s',a') - Q(s,a))
+        if next_state_idx is not None and 0 <= next_state_idx < self.state_space_size:
+            max_next_q = np.max(self.q_table[next_state_idx])
+        else:
+            max_next_q = 0.0
+        td_target = reward_val + self.discount_factor * max_next_q
+        new_q = current_q + self.learning_rate * (td_target - current_q)
         self.q_table[state_idx, action_idx] = new_q
 
     def _generate_random_item(self, min_len=5, max_len=40,
                               run_likelihood_factor: float = 0.33,
                               unique_char_focus_factor: float = 0.33
                               ):
-        actual_min_len = max(1, min_len);
+        """Generate a random benchmark string with controllable run structure.
+
+        Optimised for large items (MB-scale): builds data in bulk chunks
+        using ``random.choices`` and string multiplication instead of
+        character-by-character appending.
+        """
+        actual_min_len = max(1, min_len)
         actual_max_len = max(actual_min_len + 1, max_len)
         length = random.randint(actual_min_len, actual_max_len)
+
+        # --- Build character pool (same logic as before) ---
         alpha_num_sym = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*()_+-=[]{};':\",./<>? "
-        char_pool_size_ratio = 0.2 + (0.8 * unique_char_focus_factor);
-        effective_char_pool_size = int(len(alpha_num_sym) * char_pool_size_ratio)
-        effective_char_pool_size = max(1, effective_char_pool_size)
+        char_pool_size_ratio = 0.2 + (0.8 * unique_char_focus_factor)
+        effective_char_pool_size = max(1, int(len(alpha_num_sym) * char_pool_size_ratio))
         if effective_char_pool_size < len(alpha_num_sym) / 2 and effective_char_pool_size > 0:
-            alpha_lower = "abcdefghijklmnopqrstuvwxyz";
-            alpha_upper = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
-            nums = "0123456789"
-            common_subset = list(alpha_lower + nums);
+            common_subset = list("abcdefghijklmnopqrstuvwxyz0123456789")
             random.shuffle(common_subset)
             if effective_char_pool_size <= len(common_subset):
                 current_char_pool = common_subset[:effective_char_pool_size]
             else:
-                current_char_pool = list(set(common_subset));
+                current_char_pool = list(set(common_subset))
                 remaining_needed = effective_char_pool_size - len(current_char_pool)
                 other_symbols = [s for s in alpha_num_sym if s not in current_char_pool]
-                if remaining_needed > 0 and other_symbols: current_char_pool.extend(
-                    random.sample(other_symbols, min(remaining_needed, len(other_symbols))))
+                if remaining_needed > 0 and other_symbols:
+                    current_char_pool.extend(
+                        random.sample(other_symbols, min(remaining_needed, len(other_symbols))))
         else:
             current_char_pool = list(alpha_num_sym)
-        if not current_char_pool: current_char_pool = ['a']
-        chars = []
-        yield_frequency = 500
-        if length > 5 * 1024 * 1024:
-            yield_frequency = 50000
-        elif length > 500 * 1024:
-            yield_frequency = 10000
-        elif length > 50 * 1024:
-            yield_frequency = 2000
-        while len(chars) < length:
-            if self.gui_stop_event and self.gui_stop_event.is_set(): break
-            if len(chars) > 0 and len(chars) % yield_frequency == 0: time.sleep(0)
-            is_a_run = random.random() < run_likelihood_factor;
-            char_to_use = random.choice(current_char_pool)
-            if is_a_run:
-                base_max_run = max(2, int(length * 0.05 + (length * 0.2 * run_likelihood_factor)));
-                min_run_len_for_gen = 1
-                if run_likelihood_factor > 0.6: min_run_len_for_gen = 2
-                if run_likelihood_factor > 0.8: min_run_len_for_gen = 3
-                if unique_char_focus_factor > 0.7:
-                    base_max_run = max(min_run_len_for_gen, int(base_max_run * 0.3))
-                elif unique_char_focus_factor > 0.5:
-                    base_max_run = max(min_run_len_for_gen, int(base_max_run * 0.6))
-                run_len = random.randint(min_run_len_for_gen, max(min_run_len_for_gen + 1, base_max_run));
-                run_len = min(run_len, length - len(chars))
-                if run_len > 0:
-                    chars.extend([char_to_use] * run_len)
-                else:
+        if not current_char_pool:
+            current_char_pool = ['a']
+
+        # --- Pre-compute run-length parameters once ---
+        base_max_run = max(2, int(length * 0.05 + (length * 0.2 * run_likelihood_factor)))
+        min_run_len_for_gen = 1
+        if run_likelihood_factor > 0.6: min_run_len_for_gen = 2
+        if run_likelihood_factor > 0.8: min_run_len_for_gen = 3
+        if unique_char_focus_factor > 0.7:
+            base_max_run = max(min_run_len_for_gen, int(base_max_run * 0.3))
+        elif unique_char_focus_factor > 0.5:
+            base_max_run = max(min_run_len_for_gen, int(base_max_run * 0.6))
+        max_random_seg = max(1, int(3 * (1.0 - run_likelihood_factor)))
+
+        # --- Bulk chunk generation (the fast path) ---
+        # Instead of appending one char at a time we build string chunks
+        # of runs / random segments and join once at the end.
+        chunks = []
+        remaining = length
+        # Check stop event only every ~256KB worth of output
+        stop_check_interval = max(1, 256 * 1024)
+        next_stop_check = stop_check_interval
+
+        while remaining > 0:
+            # Periodic stop-event check (cheap — just a flag test)
+            if remaining < next_stop_check:
+                if self.gui_stop_event and self.gui_stop_event.is_set():
                     break
+                next_stop_check = remaining - stop_check_interval
+
+            if random.random() < run_likelihood_factor:
+                # --- Run of identical characters ---
+                run_len = random.randint(min_run_len_for_gen,
+                                         max(min_run_len_for_gen + 1, base_max_run))
+                run_len = min(run_len, remaining)
+                c = random.choice(current_char_pool)
+                chunks.append(c * run_len)       # string multiply — very fast
+                remaining -= run_len
             else:
-                num_random_chars_segment = random.randint(1, max(1, int(3 * (1.0 - run_likelihood_factor))))
-                num_random_chars_segment = min(num_random_chars_segment, length - len(chars))
-                if num_random_chars_segment > 0:
-                    for _ in range(num_random_chars_segment): chars.append(random.choice(current_char_pool))
-                else:
-                    break
-        if len(chars) > length:
-            chars = chars[:length]
-        elif len(chars) < length and not (self.gui_stop_event and self.gui_stop_event.is_set()):
-            chars.extend([random.choice(current_char_pool)] * (length - len(chars)))
-        return "".join(chars)
+                # --- Random segment (bulk via random.choices) ---
+                seg_len = min(random.randint(1, max_random_seg), remaining)
+                chunks.append(''.join(random.choices(current_char_pool, k=seg_len)))
+                remaining -= seg_len
+
+        result = ''.join(chunks)
+        # Pad if we fell short (e.g. due to stop event not set, just rounding)
+        if len(result) < length:
+            result += ''.join(random.choices(current_char_pool, k=length - len(result)))
+        return result[:length]
 
     def _handle_item_processing_for_training(self, item_text, counter_info=""):
         state_idx = self._get_state_representation(item_text);
@@ -342,20 +433,72 @@ class PuffinZipAI:
         elif action_idx == 2:
             compressed_text_final = rle_compress(item_text, method="advanced");
             decompressed_text_final = rle_decompress(compressed_text_final, method="advanced")
+        elif action_idx == 3:
+            if self._novel_compress_fn and self._novel_decompress_fn:
+                try:
+                    compressed_text_final = self._novel_compress_fn(item_text)
+                    decompressed_text_final = self._novel_decompress_fn(compressed_text_final)
+                except Exception:
+                    compressed_text_final = item_text
+                    decompressed_text_final = item_text
+            else:
+                # NovelMethod not available — fall back to NoCompression
+                compressed_text_final = item_text
+                decompressed_text_final = item_text
+        elif action_idx == 4:
+            # ReferenceMethod — use scaffolded known compression method
+            if self._reference_compress_fn and self._reference_decompress_fn:
+                try:
+                    compressed_bytes = self._reference_compress_fn(item_text)
+                    decompressed_text_final = self._reference_decompress_fn(compressed_bytes)
+                    # Store byte length as string so ratio calculations work
+                    compressed_text_final = "X" * len(compressed_bytes)  # placeholder of correct length
+                except Exception:
+                    compressed_text_final = item_text
+                    decompressed_text_final = item_text
+            else:
+                compressed_text_final = item_text
+                decompressed_text_final = item_text
         if decompressed_text_final in RLE_DECOMPRESSION_ERRORS: rle_error_code_final = decompressed_text_final
         end_time_ns = time.perf_counter_ns();
         processing_time_ms = (end_time_ns - start_time_ns) / 1e6
         current_reward = calculate_reward(item_text, compressed_text_final, decompressed_text_final, action_name,
                                           processing_time_ms, rle_error_code_final)
+        # Apply scaffolding reward adjustment for reference method usage
+        if self._scaffolding_enabled and action_idx == 4:
+            try:
+                from .reward_system import calculate_scaffolded_reward
+                agent_id = str(self._scaffold_agent_id or id(self))
+                current_reward = calculate_scaffolded_reward(
+                    current_reward, action_name, agent_id,
+                    item_text, len(compressed_text_final), original_size,
+                    generation=getattr(self, '_current_generation', 0),
+                )
+            except ImportError:
+                pass
+        elif self._scaffolding_enabled and action_idx in (0, 2, 3):
+            # Own method — check for bonus vs reference methods
+            try:
+                from .reward_system import calculate_scaffolded_reward
+                agent_id = str(self._scaffold_agent_id or id(self))
+                current_reward = calculate_scaffolded_reward(
+                    current_reward, action_name, agent_id,
+                    item_text, len(compressed_text_final), original_size,
+                    generation=getattr(self, '_current_generation', 0),
+                )
+            except ImportError:
+                pass
         decompression_mismatch = False
-        if (action_idx == 0 or action_idx == 2) and (
+        if (action_idx in (0, 2, 3, 4)) and (
                 rle_error_code_final or (decompressed_text_final != item_text)):
             decompression_mismatch = True;
             self.training_stats['decomp_errors'] += 1
         self.training_stats['total_items_processed'] += 1;
         self.training_stats['cumulative_reward'] += current_reward
+        # Compute next_state from compressed output for TD(0) Q-learning
+        next_state_idx = self._get_state_representation(compressed_text_final) if compressed_text_final else state_idx
         return (state_idx, action_idx, current_reward, item_text[:50], action_name, compressed_text_final[:50],
-                decompressed_text_final[:50], decompression_mismatch)
+                decompressed_text_final[:50], decompression_mismatch, next_state_idx)
 
     def _process_batch(self, batch_experiences, session_info=""):
         batch_len = len(batch_experiences);
@@ -364,8 +507,13 @@ class PuffinZipAI:
         items_processed_in_batch = 0
         for i, experience_tuple in enumerate(batch_experiences):
             if self.gui_stop_event and self.gui_stop_event.is_set(): break
-            state_idx, action_idx, reward_val, _, _, _, _, _ = experience_tuple
-            self._update_q_table(state_idx, action_idx, reward_val)
+            # Support both old 8-tuple and new 9-tuple (with next_state_idx)
+            if len(experience_tuple) >= 9:
+                state_idx, action_idx, reward_val, _, _, _, _, _, next_state_idx = experience_tuple
+            else:
+                state_idx, action_idx, reward_val, _, _, _, _, _ = experience_tuple
+                next_state_idx = None
+            self._update_q_table(state_idx, action_idx, reward_val, next_state_idx=next_state_idx)
             self.exploration_rate = max(self.min_exploration_rate, self.exploration_rate * self.exploration_decay_rate)
             sum_rewards_batch += reward_val;
             items_processed_in_batch += 1
@@ -773,7 +921,7 @@ class PuffinZipAI:
         state_description = f"L{len_idx}U{unique_ratio_idx}R{run_cat_idx}"
         q_values_for_state = self.q_table[state_idx];
         preferred_action_idx = np.argmax(q_values_for_state);
-        preferred_action_name = self.action_names[preferred_action_idx]
+        preferred_action_name = self.action_names[int(preferred_action_idx)]
         q_info_parts = [f"{self.action_names[act_i]}:{q_values_for_state[act_i]:.3f}" for act_i in
                         range(self.action_space_size)];
         q_info_str = "|".join(q_info_parts)
@@ -834,7 +982,7 @@ class PuffinZipAI:
     def test_agent_on_random_items(self, num_items=5):
         session_id = "TestRandomItems";
         self._send_to_gui(
-            f"\n--- Testing Agent on {num_items} Random Items (Thresholds: {self.len_thresholds}, SimpleRLE_Min_Run: {self.rle_min_encodable_run_length}) ---")
+            f"\n--- Testing Agent on {num_items} Random Items (Thresholds: {self.len_thresholds}, SimpleRLE Min_Run: {self.rle_min_encodable_run_length}) ---")
         cumulative_reward_test, items_tested_count = 0.0, 0
         for i in range(num_items):
             if self.gui_stop_event and self.gui_stop_event.is_set(): break
@@ -981,6 +1129,111 @@ class PuffinZipAI:
                 'target_device': self.target_device,
                 }
 
+    # ------------------------------------------------------------------
+    # Pickle support — exclude unpicklable closures, loggers, GUI refs
+    # ------------------------------------------------------------------
+    def __getstate__(self):
+        state = self.__dict__.copy()
+        # Remove unpicklable closures
+        state['_novel_compress_fn'] = None
+        state['_novel_decompress_fn'] = None
+        state['_reference_compress_fn'] = None
+        state['_reference_decompress_fn'] = None
+        # Preserve novel method reconstruction info, drop the object itself.
+        # The full pipeline definition (pipeline name, discovery_seed,
+        # rle_min_run, steps) is stored so novel methods survive
+        # save/load/restart.  This is the key to persistence: we store the
+        # *recipe*, not the closure, then rebuild the closures on load.
+        novel_meta = None
+        if self.novel_method is not None:
+            md = getattr(self.novel_method, 'metadata', {})
+            novel_meta = {
+                'pipeline': md.get('pipeline', 'rle_only'),
+                'discovery_seed': md.get('discovery_seed'),
+                'rle_min_run': md.get('rle_min_run', 3),
+                'steps': md.get('steps', []),
+                'name': getattr(self.novel_method, 'name', 'restored_novel'),
+                'description': getattr(self.novel_method, 'description', ''),
+                'author': getattr(self.novel_method, 'author', 'NovelCompressionGenerator_v2'),
+            }
+        state['novel_method'] = None
+        state['_novel_method_meta'] = novel_meta
+        # Remove unpicklable logger / GUI refs
+        state.pop('logger', None)
+        state.pop('gui_stop_event', None)
+        state.pop('gui_output_queue', None)
+        return state
+
+    def __setstate__(self, state):
+        novel_meta = state.pop('_novel_method_meta', None)
+        self.__dict__.update(state)
+        # Restore logger
+        shared_logger_name = 'PuffinZipAI_Core_Shared'
+        self.logger = logging.getLogger(shared_logger_name)
+        if not self.logger.handlers:
+            try:
+                log_file = os.path.join(LOGS_DIR_PATH, CORE_AI_LOG_FILENAME)
+                self.logger = setup_logger(logger_name=shared_logger_name,
+                                          log_filename=log_file,
+                                          log_level=logging.INFO)
+            except Exception:
+                self.logger = DummyLogger()
+        # Restore GUI refs
+        self.gui_stop_event = None
+        self.gui_output_queue = None
+        # Rebuild novel compression closures from the stored pipeline recipe.
+        # The recipe (pipeline name, discovery_seed, rle_min_run, steps) was
+        # saved by __getstate__ so that novel methods survive save/load/restart.
+        if novel_meta:
+            try:
+                from .novel_compression_generator import NovelCompressionGenerator
+                gen = NovelCompressionGenerator()
+                cfn, dfn = gen._build_pipeline(
+                    novel_meta['pipeline'],
+                    discovery_seed=novel_meta.get('discovery_seed'),
+                    rle_min_run=novel_meta.get('rle_min_run'),
+                )
+                from .compression_method_registry import CompressionMethod, CompressionLanguage
+                # Rebuild the full metadata dict so downstream code sees the
+                # same fields as a freshly-generated method.
+                restored_metadata = {
+                    'pipeline': novel_meta.get('pipeline', 'rle_only'),
+                    'discovery_seed': novel_meta.get('discovery_seed'),
+                    'rle_min_run': novel_meta.get('rle_min_run', 3),
+                    'steps': novel_meta.get('steps', []),
+                }
+                self.novel_method = CompressionMethod(
+                    name=novel_meta.get('name', 'restored_novel'),
+                    language=CompressionLanguage.HYBRID,
+                    compress_fn=cfn,
+                    decompress_fn=dfn,
+                    description=novel_meta.get('description', ''),
+                    author=novel_meta.get('author', 'NovelCompressionGenerator_v2'),
+                    is_novelty=True,
+                    metadata=restored_metadata,
+                )
+                self._novel_compress_fn = cfn
+                self._novel_decompress_fn = dfn
+            except Exception:
+                self.novel_method = None
+                self._novel_compress_fn = None
+                self._novel_decompress_fn = None
+        # Restore reference method closures for scaffolding
+        if getattr(self, '_scaffolding_enabled', False):
+            try:
+                from .compression_scaffolding import get_reference_method
+                pref = getattr(self, '_preferred_reference', 'gzip')
+                ref = get_reference_method(pref)
+                if ref:
+                    self._reference_compress_fn = ref.compress_fn
+                    self._reference_decompress_fn = ref.decompress_fn
+            except ImportError:
+                self._reference_compress_fn = None
+                self._reference_decompress_fn = None
+        else:
+            self._reference_compress_fn = None
+            self._reference_decompress_fn = None
+
     def clone_core_model(self):
         config_params_for_clone = self.get_config_dict();
         cloned_ai_agent = PuffinZipAI(**config_params_for_clone)
@@ -990,9 +1243,19 @@ class PuffinZipAI:
             else:
                 self.logger.warning(
                     f"Q-table shape mismatch during clone. Original: {self.q_table.shape}, Cloned (after init): {cloned_ai_agent.q_table.shape if cloned_ai_agent.q_table is not None else 'None'}. Cloned Q-table is re-initialized one.")
+        # Propagate novel compression method to clone
+        cloned_ai_agent.novel_method = self.novel_method
+        cloned_ai_agent._novel_compress_fn = self._novel_compress_fn
+        cloned_ai_agent._novel_decompress_fn = self._novel_decompress_fn
+        # Propagate scaffolding settings to clone
+        cloned_ai_agent._scaffolding_enabled = self._scaffolding_enabled
+        cloned_ai_agent._preferred_reference = self._preferred_reference
+        cloned_ai_agent._reference_compress_fn = self._reference_compress_fn
+        cloned_ai_agent._reference_decompress_fn = self._reference_decompress_fn
         self.logger.debug(
             f"Cloned AI core. Original SimpleRLE_MinRun: {self.rle_min_encodable_run_length}, Cloned: {cloned_ai_agent.rle_min_encodable_run_length}. "
-            f"Cloned LR: {cloned_ai_agent.learning_rate:.4f}. Cloned TargetDevice: '{cloned_ai_agent.target_device}'.")
+            f"Cloned LR: {cloned_ai_agent.learning_rate:.4f}. Cloned TargetDevice: '{cloned_ai_agent.target_device}'."
+            f" NovelMethod: {'yes' if cloned_ai_agent._novel_compress_fn else 'no'}")
         return cloned_ai_agent
 
     def save_model(self, fp=None):
@@ -1007,7 +1270,7 @@ class PuffinZipAI:
             model_state['training_stats'] = self.training_stats
             model_state['version_aicore_save'] = "1.3.6_aicore_target_device"
 
-            np.save(abs_filepath, model_state, allow_pickle=True)
+            np.save(abs_filepath, model_state, allow_pickle=True)  # type: ignore[arg-type]
             items_trained_count = self.training_stats.get('total_items_processed', 0);
             success_msg = f"Model saved to: '{abs_filepath}'. Items Trained (Global): {items_trained_count}";
             self.logger.info(success_msg);
@@ -1046,10 +1309,10 @@ class PuffinZipAI:
             if loaded_rle_min_run is not None and isinstance(loaded_rle_min_run, int) and loaded_rle_min_run >= 1:
                 self.rle_min_encodable_run_length = loaded_rle_min_run
             else:
-                default_rle_min_run_fb = 3;
+                default_rle_min_run_fb = 6;
                 try:
                     from .rle_utils import \
-                        MIN_ENCODABLE_RUN_LENGTH as RLE_DEFAULT_FB; default_rle_min_run_fb = RLE_DEFAULT_FB
+                        MIN_ENCODABLE_RUN_LENGTH as RLE_DEFAULT_FB; default_rle_min_run_fb = max(6, RLE_DEFAULT_FB)
                 except:
                     pass;
                 self.rle_min_encodable_run_length = getattr(self, 'rle_min_encodable_run_length',

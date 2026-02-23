@@ -60,65 +60,22 @@ try:
 except ImportError as e_base_import_gpu_agent:
     print(f"CRITICAL ERROR (gpu_ai_agent.py): Failed to import base AI or RLE components: {e_base_import_gpu_agent}")
     traceback.print_exc()
+    # If core imports failed the module cannot function.  Assign minimal
+    # no-op fallbacks so that downstream code that references these names
+    # does not crash with NameError, but any real usage will surface the
+    # root ImportError above.
     if _PuffinZipAI_base is None:
-        class PuffinZipAI_Placeholder:
-            def __init__(self, len_thresholds=None, learning_rate=None, discount_factor=None, exploration_rate=None,
-                         exploration_decay_rate=None, min_exploration_rate=None, rle_min_encodable_run=None,
-                         target_device=None, *args, **kwargs):
-                self.training_stats = {}
-                self.len_thresholds = len_thresholds if len_thresholds is not None else []
-                self.q_table = None
-                self.logger = _DummyLogger_base() if _DummyLogger_base else logging.getLogger("PZAIPH_Logger")
-                self.rle_min_encodable_run_length = rle_min_encodable_run if rle_min_encodable_run is not None else 3
-                self.action_names = {0: "RLE_PH", 1: "NoComp_PH", 2: "AdvRLE_PH"}
-                self.action_space_size = len(self.action_names)
-                self.NUM_LEN_CATS = 1;
-                self.NUM_UNIQUE_RATIO_CATS = 1;
-                self.NUM_RUN_CATS = 1
-                self.learning_rate = learning_rate if learning_rate is not None else _DEFAULT_LEARNING_RATE
-                self.discount_factor = discount_factor if discount_factor is not None else _DEFAULT_DISCOUNT_FACTOR
-                self.exploration_rate = exploration_rate if exploration_rate is not None else _DEFAULT_EXPLORATION_RATE
-                self.exploration_decay_rate = exploration_decay_rate if exploration_decay_rate is not None else _DEFAULT_EXPLORATION_DECAY_RATE
-                self.min_exploration_rate = min_exploration_rate if min_exploration_rate is not None else _DEFAULT_MIN_EXPLORATION_RATE
-                self.target_device = target_device if target_device is not None else "CPU_PH"
-                self.use_gpu_acceleration = False
-                self._reinitialize_state_dependent_vars()
-
-            def _reinitialize_state_dependent_vars(self):
-                self.action_space_size = len(self.action_names) if hasattr(self, 'action_names') else 3
-                self.state_space_size = (
-                                                    len(self.len_thresholds) + 1) * self.NUM_UNIQUE_RATIO_CATS * self.NUM_RUN_CATS if hasattr(
-                    self, 'len_thresholds') else (1 + 0) * 1 * 1
-                if self.state_space_size > 0 and self.action_space_size > 0:
-                    self.q_table = np.zeros((self.state_space_size, self.action_space_size))
-                else:
-                    self.q_table = np.zeros((1, 3))
-                self.training_stats = {'rle_chosen_count': 0, 'nocomp_chosen_count': 0, 'advanced_rle_chosen_count': 0,
-                                       'decomp_errors': 0, 'total_items_processed': 0, 'cumulative_reward': 0.0,
-                                       'reward_history': []}
-            def get_config_dict(self):
-                return {'target_device': self.target_device, 'len_thresholds': self.len_thresholds,
-                        'rle_min_encodable_run': self.rle_min_encodable_run_length, 'learning_rate': self.learning_rate,
-                        'discount_factor': self.discount_factor, 'exploration_rate': self.exploration_rate,
-                        'exploration_decay_rate': self.exploration_decay_rate,
-                        'min_exploration_rate': self.min_exploration_rate}
-            def load_model(self, fp=None): return False
-            def save_model(self, fp=None): return False
-            def _get_state_representation(self, item_text): return 0
-            def _choose_action(self, state_idx, use_exploration=True): return 0
-            def _update_q_table(self, state_idx, action_idx, reward_val): pass
-        _PuffinZipAI_base = PuffinZipAI_Placeholder
+        raise  # Cannot function without the base AI class
     if _DummyLogger_base is None:
-        class DummyLogger_Placeholder:
-            def _log(self, level, msg, exc_info_flag=False): print(
-                f"DummyGPUAgentLog-{level}: {msg}" + (f"\n{traceback.format_exc()}" if exc_info_flag else ""))
-            def info(self, msg): self._log("INFO", msg)
-            def warning(self, msg): self._log("WARN", msg)
-            def error(self, msg, exc_info=False): self._log("ERROR", msg, exc_info_flag=exc_info)
-            def critical(self, msg, exc_info=False): self._log("CRITICAL", msg, exc_info_flag=exc_info)
-            def debug(self, msg): self._log("DEBUG", msg)
-            def exception(self, msg, exc_info_flag=True): self._log("EXCEPTION", msg, exc_info_flag=exc_info_flag)
-        _DummyLogger_base = DummyLogger_Placeholder
+        _DummyLogger_base = type('DummyLogger', (), {
+            '_log': lambda self, lvl, msg, **kw: None,
+            'info': lambda self, msg: None,
+            'warning': lambda self, msg: None,
+            'error': lambda self, msg, **kw: None,
+            'critical': lambda self, msg, **kw: None,
+            'debug': lambda self, msg: None,
+            'exception': lambda self, msg, **kw: None,
+        })
     if _cpu_rle_compress_base_func is None: _cpu_rle_compress_base_func = lambda d, **k: "ERROR_CPU_RLE_UNAVAILABLE"
     if _cpu_rle_decompress_base_func is None: _cpu_rle_decompress_base_func = lambda d, **k: "ERROR_CPU_RLE_UNAVAILABLE"
     if _gpu_accelerated_rle_compress_func is None: _gpu_accelerated_rle_compress_func = lambda d, **kwargs: "ERROR_GPU_RLE_IMPORT_FAILED_IN_AGENT"
@@ -137,14 +94,86 @@ try:
     if nb_cuda.is_available(): NUMBA_AVAILABLE = True; cuda = nb_cuda
 except ImportError: pass
 
+# --- GPU VALIDATION CACHE ---
+# Instead of running GPU health checks per-agent (50x), we do it once globally.
+# All subsequent PuffinZipAI_GPU instances skip the expensive checks.
+_GPU_VALIDATION_CACHE = {
+    'validated': False,       # True once we've done a successful health check
+    'gpu_ok': False,          # True if GPU is usable
+    'gpu_id': -1,             # Validated GPU device ID
+    'device_name': 'Unknown', # For logging
+}
+
+def _validate_gpu_once(target_device_str: str = "GPU_AUTO") -> dict:
+    """Run GPU device init + health check once. Cache result for all agents."""
+    cache = _GPU_VALIDATION_CACHE
+    if cache['validated']:
+        return cache
+
+    cache['validated'] = True  # Mark done even if it fails, to prevent retries
+    
+    if not CUPY_AVAILABLE:
+        return cache
+
+    try:
+        num_gpus = cp.cuda.runtime.getDeviceCount()
+        if num_gpus == 0:
+            return cache
+        
+        # Parse device ID
+        parsed_id = 0
+        if target_device_str.upper() == "GPU_AUTO":
+            parsed_id = get_best_available_gpu_id()
+            if parsed_id == -1:
+                parsed_id = 0
+        elif target_device_str.upper().startswith("GPU_ID:"):
+            try:
+                parsed_id = int(target_device_str.split(":")[1])
+                if not (0 <= parsed_id < num_gpus):
+                    parsed_id = 0
+            except (ValueError, IndexError):
+                parsed_id = 0
+        
+        # Set device and get properties
+        cp.cuda.runtime.setDevice(parsed_id)
+        props = cp.cuda.runtime.getDeviceProperties(parsed_id)
+        device_name = str(props.get('name', 'Unknown')) if isinstance(props, dict) else (
+            props.name.decode() if isinstance(props.name, bytes) else str(props.name))
+        
+        # Health check — single tiny operation
+        with cp.cuda.Device(parsed_id):
+            _ = cp.array([1])
+        
+        cache['gpu_ok'] = True
+        cache['gpu_id'] = parsed_id
+        cache['device_name'] = device_name
+        
+    except Exception as e:
+        print(f"GPU validation failed: {e}")
+    
+    return cache
+
 
 class PuffinZipAI_GPU(_PuffinZipAI_base):
     def __init__(self,
                  len_thresholds=None, learning_rate=None, discount_factor=None,
                  exploration_rate=None, exploration_decay_rate=None, min_exploration_rate=None,
-                 rle_min_encodable_run: int = None, target_device: str = None):
+                 rle_min_encodable_run: int = None, rle_min_encodable_run_length: int = None,
+                 target_device: str = None,
+                 _defer_gpu_transfer: bool = False, **kwargs):
+        """
+        Args:
+            rle_min_encodable_run: Min run length for RLE (preferred param name).
+            rle_min_encodable_run_length: Alias for rle_min_encodable_run (base class compat).
+            _defer_gpu_transfer: When True, skip per-agent GPU device init and Q-table transfer.
+                Used during bulk population creation — call finalize_gpu_init() afterwards.
+        """
+        # Merge the two RLE param names (prefer explicit rle_min_encodable_run)
+        if rle_min_encodable_run is None and rle_min_encodable_run_length is not None:
+            rle_min_encodable_run = rle_min_encodable_run_length
         self.gpu_id = -1
         self.q_table_gpu = None
+        self._deferred_gpu = _defer_gpu_transfer
         lr_to_use = learning_rate if learning_rate is not None else _DEFAULT_LEARNING_RATE
         df_to_use = discount_factor if discount_factor is not None else _DEFAULT_DISCOUNT_FACTOR
         er_to_use = exploration_rate if exploration_rate is not None else _DEFAULT_EXPLORATION_RATE
@@ -164,47 +193,61 @@ class PuffinZipAI_GPU(_PuffinZipAI_base):
         elif isinstance(current_logger_assigned_by_super, logging.Logger) and hasattr(current_logger_assigned_by_super, 'name') and current_logger_assigned_by_super.name == 'PZAIPH_Logger': is_super_logger_a_placeholder = True
         if is_super_logger_a_placeholder:
             log_file_full_path_gpu = os.path.join(_LOGS_DIR_PATH_fallback, f"gpu_{_CORE_AI_LOG_FILENAME_fallback}")
+            # Use a SHARED logger name so all GPU agents reuse ONE logger instance
+            # (prevents 50+ file handles to the same log file — same fix as ai_core.py)
+            _shared_gpu_logger_name = 'PuffinZipAI_GPU_Shared'
             try:
-                self.logger = _setup_logger_func(logger_name=f'PuffinZipAI_GPU_SelfLog_{id(self)}', log_filename=log_file_full_path_gpu, log_level=logging.INFO)
-                if isinstance(self.logger, logging.Logger) and self.logger.name.endswith(str(id(self))): self.logger.info("PuffinZipAI_GPU re-initialized its own logger using _setup_logger_func.")
-                elif not isinstance(self.logger, logging.Logger): self.logger = _DummyLogger_base(); self.logger.error(f"PuffinZipAI_GPU: _setup_logger_func did not return a standard logger. Using _DummyLogger_base for PuffinZipAI_GPU SelfLog.")
+                existing = logging.getLogger(_shared_gpu_logger_name)
+                if existing.handlers:
+                    self.logger = existing
+                else:
+                    self.logger = _setup_logger_func(logger_name=_shared_gpu_logger_name, log_filename=log_file_full_path_gpu, log_level=logging.INFO)
+                if not isinstance(self.logger, logging.Logger): self.logger = _DummyLogger_base(); self.logger.error(f"PuffinZipAI_GPU: _setup_logger_func did not return a standard logger. Using _DummyLogger_base.")
             except Exception as e_gpu_log_reinit: print(f"ERROR (PuffinZipAI_GPU): Failed to re-setup its specific logger: {e_gpu_log_reinit}."); self.logger = _DummyLogger_base(); self.logger.error("Fell back to _DummyLogger_base after logger re-init attempt failed.")
         
-        if self.use_gpu_acceleration:
-            self.logger.info(f"PZAI_GPU: GPU acceleration IS requested by target_device '{self.target_device}'.")
-            if CUPY_AVAILABLE:
-                self._initialize_gpu_device(self.target_device)
-                if self.gpu_id != -1:
-                    # --- ADDED: More robust health check ---
-                    try:
-                        with cp.cuda.Device(self.gpu_id):
-                            # Attempt a simple operation to catch runtime/driver issues
-                            _ = cp.array([1]) 
-                        self.logger.info("PZAI_GPU: CuPy basic functionality check PASSED.")
-                    except Exception as e_cupy_runtime:
-                        self.logger.critical(f"PZAI_GPU: CuPy runtime test FAILED for GPU {self.gpu_id}. This can be due to driver/toolkit issues (like missing nvrtc64.dll). Disabling GPU ops. Error: {e_cupy_runtime}", exc_info=True)
-                        self.use_gpu_acceleration = False
-                        self.gpu_id = -1
-                    # --- END OF HEALTH CHECK ---
-
-                    if self.use_gpu_acceleration: # Re-check after health test
-                        self.logger.info(f"PZAI_GPU: GPU ID {self.gpu_id} is functional. Attempting Q-table transfer.")
-                        self._transfer_q_table_to_gpu()
-                        if self.q_table_gpu is None:
-                            self.logger.warning("PZAI_GPU: Q-table transfer to GPU FAILED. Disabling GPU Q-table ops.")
-                            self.use_gpu_acceleration = False
-                        else:
-                            self.logger.info(f"PZAI_GPU: Q-table successfully transferred to GPU {self.gpu_id}.")
-                else:
-                    self.logger.warning(f"PZAI_GPU: _initialize_gpu_device did not set a valid GPU ID. Disabling GPU ops.")
-                    self.use_gpu_acceleration = False
-            else:
-                self.logger.warning("PZAI_GPU: Target device indicates GPU, but no GPU libs (CuPy) found. Disabling GPU ops.")
-                self.use_gpu_acceleration = False
+        if self._deferred_gpu:
+            # --- DEFERRED MODE: Skip all GPU init, will be finalized in bulk later ---
+            self.logger.debug(f"PZAI_GPU: Deferred GPU init mode — skipping device probe & Q-table transfer.")
+        elif self.use_gpu_acceleration:
+            self._do_gpu_init()
         else:
             self.logger.info(f"PZAI_GPU: GPU acceleration is NOT enabled by target_device '{self.target_device}'. Using CPU ops.")
         
-        self.logger.info(f"PZAI_GPU Final Init State: TargetDevice='{getattr(self, 'target_device', 'N/A')}', GPU Ops Active={self.use_gpu_acceleration}, GPU_ID={self.gpu_id}")
+        self.logger.info(f"PZAI_GPU Final Init State: TargetDevice='{getattr(self, 'target_device', 'N/A')}', GPU Ops Active={self.use_gpu_acceleration}, GPU_ID={self.gpu_id}, Deferred={self._deferred_gpu}")
+
+    def _do_gpu_init(self):
+        """Perform GPU device init and Q-table transfer using the global validation cache."""
+        self.logger.info(f"PZAI_GPU: GPU acceleration IS requested by target_device '{self.target_device}'.")
+        if CUPY_AVAILABLE:
+            # Use the global validation cache instead of per-agent device probing
+            cache = _validate_gpu_once(self.target_device)
+            if cache['gpu_ok']:
+                self.gpu_id = cache['gpu_id']
+                self.logger.info(f"PZAI_GPU: Using cached GPU validation — GPU {self.gpu_id} ({cache['device_name']}) confirmed OK.")
+                self._transfer_q_table_to_gpu()
+                if self.q_table_gpu is None:
+                    self.logger.warning("PZAI_GPU: Q-table transfer to GPU FAILED. Disabling GPU Q-table ops.")
+                    self.use_gpu_acceleration = False
+                else:
+                    self.logger.info(f"PZAI_GPU: Q-table successfully transferred to GPU {self.gpu_id}.")
+            else:
+                self.logger.warning(f"PZAI_GPU: GPU validation cache reports GPU not OK. Disabling GPU ops.")
+                self.use_gpu_acceleration = False
+        else:
+            self.logger.warning("PZAI_GPU: Target device indicates GPU, but no GPU libs (CuPy) found. Disabling GPU ops.")
+            self.use_gpu_acceleration = False
+
+    def finalize_gpu_init(self):
+        """Finalize GPU setup for agents created with _defer_gpu_transfer=True.
+        Uses the cached GPU validation to avoid redundant device probing.
+        Call this once after bulk population creation."""
+        if not self._deferred_gpu:
+            return  # Already initialized normally
+        self._deferred_gpu = False
+        if self.use_gpu_acceleration:
+            self._do_gpu_init()
+        else:
+            self.logger.debug("PZAI_GPU finalize_gpu_init: GPU not requested, nothing to do.")
 
     def _initialize_gpu_device(self, target_device_str: str):
         if CUPY_AVAILABLE:
@@ -290,15 +333,25 @@ class PuffinZipAI_GPU(_PuffinZipAI_base):
             elif chosen_action_name == "AdvancedRLE": self.training_stats['advanced_rle_chosen_count'] += 1
         return action_idx
 
-    def _update_q_table(self, state_idx, action_idx, reward_val):
+    def _update_q_table(self, state_idx, action_idx, reward_val, next_state_idx=None):
         learning_rate_val = getattr(self, 'learning_rate', _DEFAULT_LEARNING_RATE)
+        discount_factor_val = getattr(self, 'discount_factor', _DEFAULT_DISCOUNT_FACTOR)
         q_table_cpu = getattr(self, 'q_table', None)
         if self.use_gpu_acceleration and self.q_table_gpu is not None and CUPY_AVAILABLE and self.gpu_id != -1:
             try:
-                with cp.cuda.Device(self.gpu_id): current_q_gpu = self.q_table_gpu[state_idx, action_idx]; new_q_gpu = current_q_gpu + learning_rate_val * (reward_val - current_q_gpu); self.q_table_gpu[state_idx, action_idx] = new_q_gpu
+                with cp.cuda.Device(self.gpu_id):
+                    current_q_gpu = self.q_table_gpu[state_idx, action_idx]
+                    # Proper TD(0) Q-learning with next-state max Q
+                    if next_state_idx is not None and 0 <= next_state_idx < self.q_table_gpu.shape[0]:
+                        max_next_q_gpu = cp.max(self.q_table_gpu[next_state_idx])
+                    else:
+                        max_next_q_gpu = cp.float64(0.0)
+                    td_target = reward_val + discount_factor_val * max_next_q_gpu
+                    new_q_gpu = current_q_gpu + learning_rate_val * (td_target - current_q_gpu)
+                    self.q_table_gpu[state_idx, action_idx] = new_q_gpu
                 return
             except Exception as e_gpu_update: self.logger.warning(f"Error during GPU Q-table update: {e_gpu_update}. Falling back to CPU.")
-        if q_table_cpu is not None and isinstance(q_table_cpu, np.ndarray) and q_table_cpu.size > 0 and state_idx < q_table_cpu.shape[0] and action_idx < q_table_cpu.shape[1]: super()._update_q_table(state_idx, action_idx, reward_val)
+        if q_table_cpu is not None and isinstance(q_table_cpu, np.ndarray) and q_table_cpu.size > 0 and state_idx < q_table_cpu.shape[0] and action_idx < q_table_cpu.shape[1]: super()._update_q_table(state_idx, action_idx, reward_val, next_state_idx=next_state_idx)
         else: self.logger.error(f"CPU Q-table not available/invalid for fallback update for S={state_idx}, A={action_idx}. Update skipped. q_table type: {type(q_table_cpu)}")
 
     def _handle_item_processing_for_training(self, item_text, counter_info=""):

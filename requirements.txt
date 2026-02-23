@@ -1,4 +1,18 @@
+# ── Core (required) ──────────────────────────────────────────────────────────
 numpy
 matplotlib
 psutil
-cupy-cuda11x
+requests
+
+# ── Web UI ───────────────────────────────────────────────────────────────────
+flask
+flask-cors
+
+# ── Optional: GPU acceleration (requires CUDA 12.x toolkit) ─────────────────
+# cupy-cuda12x
+
+# ── Optional: Neural-network agents (Dueling DQN) ───────────────────────────
+# torch
+
+# ── Optional: Zstandard baseline in benchmarks ──────────────────────────────
+# zstandard

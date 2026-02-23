@@ -25,6 +25,7 @@ try:
         DEFAULT_FOLDER_LEARN_BATCH_SIZE, DEFAULT_BATCH_COMPRESS_EXTENSIONS,
         ELS_LOG_PREFIX as CFG_ELS_LOG_PREFIX,
         ELS_STATS_MSG_PREFIX as CFG_ELS_STATS_MSG_PREFIX,
+        GEN_SNAPSHOT_MSG_PREFIX as CFG_GEN_SNAPSHOT_MSG_PREFIX,
         INITIAL_BENCHMARK_COMPLEXITY_LEVEL as CONFIG_INITIAL_BENCH_COMPLEXITY_DEFAULT,
         DYNAMIC_BENCHMARKING_ACTIVE_BY_DEFAULT as CONFIG_DYN_BENCH_ACTIVE_DEFAULT,
         DYNAMIC_BENCHMARK_REFRESH_INTERVAL_GENS as CONFIG_DYN_BENCH_REFRESH_DEFAULT,
@@ -140,10 +141,11 @@ MAIN_APP_DIR = os.path.dirname(os.path.abspath(__file__));
 PROJECT_ROOT_FROM_GUI = os.path.dirname(MAIN_APP_DIR)
 
 CHANGELOG_FILENAME = "changelog.md";
-CHANGELOG_FILE_PATH = os.path.join(PROJECT_ROOT_FROM_GUI, CHANGELOG_FILENAME)
+CHANGELOG_FILE_PATH = os.path.join(PROJECT_ROOT_FROM_GUI, "docs", CHANGELOG_FILENAME)
 
 ELS_STATS_MSG_PREFIX = CFG_ELS_STATS_MSG_PREFIX;
 ELS_LOG_PREFIX = CFG_ELS_LOG_PREFIX;
+GEN_SNAPSHOT_MSG_PREFIX = CFG_GEN_SNAPSHOT_MSG_PREFIX;
 
 
 class PuffinZipApp(tk.Tk):
@@ -770,6 +772,17 @@ class PuffinZipApp(tk.Tk):
                     continue
                 # -------------------------------
 
+                # --- GENERATION SNAPSHOT HANDLER ---
+                if message.startswith(GEN_SNAPSHOT_MSG_PREFIX):
+                    try:
+                        gen_str = message.split(":", 1)[1]
+                        if hasattr(self, 'gdv_tab_instance') and self.gdv_tab_instance:
+                            self.gdv_tab_instance.on_generation_snapshot(int(gen_str))
+                    except Exception:
+                        pass
+                    continue
+                # ----------------------------------
+
                 if message.startswith(ELS_STATS_MSG_PREFIX):
                     # ... (Existing Stats Logic) ...
                     stats_data_str = message.replace(ELS_STATS_MSG_PREFIX, "").strip()
@@ -982,11 +995,6 @@ class PuffinZipApp(tk.Tk):
                     self.els_optimizer.set_continuous_run_enabled(desired)
                 except Exception:
                     pass
-            else:
-                if hasattr(self.els_optimizer, 'config') and isinstance(self.els_optimizer.config, dict):
-                    self.els_optimizer.config['ELS_CONTINUOUS_RUN_ENABLED'] = desired
-                if isinstance(getattr(self.els_optimizer, 'tuned_params', None), dict):
-                    self.els_optimizer.tuned_params['ELS_CONTINUOUS_RUN_ENABLED'] = desired
 
     def _rehydrate_els_history_from_optimizer(self):
         if not self.els_optimizer:
@@ -1240,12 +1248,15 @@ class PuffinZipApp(tk.Tk):
             "ELS Error: Evolutionary Optimizer system not available (class not loaded)."); return
         if self.els_optimizer is None:
             try:
+                _infinite = self._coerce_bool(
+                    self.els_continuous_mode_var.get() if hasattr(self, 'els_continuous_mode_var') else True, True)
                 self.els_optimizer = EvolutionaryOptimizer(gui_output_queue=self.gui_output_queue,
                                                            gui_stop_event=self.gui_stop_event,
                                                            tuned_params=self.tuned_params,
                                                            dynamic_benchmarking_active=CONFIG_DYN_BENCH_ACTIVE_DEFAULT,
                                                            benchmark_refresh_interval_gens=CONFIG_DYN_BENCH_REFRESH_DEFAULT,
-                                                           target_device=self.app_target_device);
+                                                           target_device=self.app_target_device,
+                                                           infinite_mode=_infinite);
             except Exception as e_reinit_els:
                 self.log_message(
                     f"ELS Error: Failed to initialize Evolutionary Optimizer: {e_reinit_els}");

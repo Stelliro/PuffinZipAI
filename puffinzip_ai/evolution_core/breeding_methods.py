@@ -64,7 +64,13 @@ def complex_threshold_crossover(thresholds1: list, thresholds2: list):
                 combined_thresholds = sorted(list(set(combined_thresholds)))
 
     child1_thresholds = [max(1, int(t)) for t in combined_thresholds]
-    child2_thresholds = [max(1, int(t)) for t in combined_thresholds]
+    # Child2: perturb the merged thresholds to create genetic diversity
+    child2_thresholds = []
+    for t in combined_thresholds:
+        # Small random shift (+/- 10%) for each threshold
+        shift = max(1, int(t * 0.1))
+        perturbed = t + random.randint(-shift, shift)
+        child2_thresholds.append(max(1, int(perturbed)))
 
     if not child1_thresholds: child1_thresholds = [random.randint(10, 50) for _ in range(MIN_THRESHOLDS_COUNT)]
     if not child2_thresholds: child2_thresholds = [random.randint(10, 50) for _ in range(MIN_THRESHOLDS_COUNT)]
