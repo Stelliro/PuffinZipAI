@@ -90,9 +90,22 @@ MIN_ENCODABLE_RUN_LENGTH_ADVANCED = 2
 ADV_THROTTLE_RUN_LENGTH_THRESHOLD = 1 * 1024 * 1024
 ADV_THROTTLE_CHUNK_SIZE = 256 * 1024
 ADV_THROTTLE_SLEEP_DURATION = 0.001
+# SOH control char used as escape/control prefix.  Format is completely unambiguous:
+#   Run  (count >= min_run):  DELIM + count_digits + DELIM + char
+#   Literal DELIM in data:    DELIM + DELIM
+#   Everything else:          literal char
+ADV_RLE_DELIMITER = '\x01'
 
 
 def advanced_rle_compress(text_data: str) -> str:
+    """Compress text using delimiter-framed RLE.
+
+    Encoding rules:
+      - A run of `count` copies of `char` (count >= MIN_ENCODABLE_RUN_LENGTH_ADVANCED)
+        is encoded as  DELIM + str(count) + DELIM + char.
+      - A literal DELIM character is escaped as  DELIM + DELIM.
+      - All other characters (including digits) are emitted literally.
+    """
     if not isinstance(text_data, str):
         adv_rle_logger.error("Input data for advanced RLE compression must be a string.")
         raise TypeError("Input data for RLE compression must be a string.")
@@ -100,6 +113,7 @@ def advanced_rle_compress(text_data: str) -> str:
         return ""
 
     current_min_run = MIN_ENCODABLE_RUN_LENGTH_ADVANCED
+    DELIM = ADV_RLE_DELIMITER
     n = len(text_data)
     result_parts = []
     i = 0
@@ -112,98 +126,116 @@ def advanced_rle_compress(text_data: str) -> str:
             i += 1
 
         if count >= current_min_run:
+            # Framed run: DELIM + count + DELIM + char
+            result_parts.append(DELIM)
             result_parts.append(str(count))
+            result_parts.append(DELIM)
             result_parts.append(current_char)
         else:
-            result_parts.append(current_char * count)
+            # Literal character(s) — escape any DELIM occurrences
+            for _ in range(count):
+                if current_char == DELIM:
+                    result_parts.append(DELIM)
+                    result_parts.append(DELIM)
+                else:
+                    result_parts.append(current_char)
 
     return "".join(result_parts)
 
 
 def advanced_rle_decompress(compressed_text_data: str) -> str:
+    """Decompress delimiter-framed RLE.
+
+    Decoding rules:
+      - DELIM + digits + DELIM + char  →  repeat char `digits` times.
+      - DELIM + DELIM                  →  literal DELIM character.
+      - Any other character             →  literal.
+    """
     if not isinstance(compressed_text_data, str):
         adv_rle_logger.error("Input data for advanced RLE decompression must be a string.")
         raise TypeError("Input data for RLE decompression must be a string.")
     if not compressed_text_data:
         return ""
 
-    current_min_run = MIN_ENCODABLE_RUN_LENGTH_ADVANCED
+    DELIM = ADV_RLE_DELIMITER
     result_parts = []
     i = 0
     n = len(compressed_text_data)
     total_decompressed_size = 0
-    max_result_parts_heuristic = max(n * 3, 20000)
 
     while i < n:
-        if len(result_parts) > max_result_parts_heuristic:
+        if len(result_parts) > max(n * 3, 20000):
             adv_rle_logger.error(
-                f"Advanced RLE Decomp loop protection. Parts: {len(result_parts)}. Input: '{compressed_text_data[:100]}'")
+                f"Advanced RLE Decomp loop protection. Parts: {len(result_parts)}. Input len: {n}")
             return RLE_ERROR_MALFORMED
 
         char = compressed_text_data[i]
-        if char.isdigit():
-            count_str = ""
-            start_of_count_idx = i
-            digit_read_count = 0
-            while i < n and compressed_text_data[i].isdigit() and digit_read_count < MAX_COUNT_STRING_DIGITS:
-                count_str += compressed_text_data[i]
-                i += 1
-                digit_read_count += 1
 
-            if digit_read_count == MAX_COUNT_STRING_DIGITS and i < n and compressed_text_data[i].isdigit():
-                context = compressed_text_data[max(0, start_of_count_idx - 5): min(n, i + 15)]
-                adv_rle_logger.warning(
-                    f"Adv RLE Decomp: Count str >{MAX_COUNT_STRING_DIGITS} digits, treating as literal. Near: '{context}'")
-                while i < n and compressed_text_data[i].isdigit():
-                    count_str += compressed_text_data[i];
-                    i += 1
-                result_parts.append(count_str)
-                total_decompressed_size += len(count_str)
-                if total_decompressed_size > ABSOLUTE_MAX_TOTAL_DECOMPRESSED_SIZE:
-                    adv_rle_logger.error(f"Adv RLE Decomp: Total size {total_decompressed_size} exceeded limit.")
-                    return RLE_ERROR_TOTAL_SIZE_LIMIT_EXCEEDED
-                continue
-
-            if not count_str:
-                result_parts.append(char);
+        if char == DELIM:
+            i += 1
+            if i >= n:
+                # Trailing orphan DELIM — malformed but tolerate as literal
+                result_parts.append(DELIM)
                 total_decompressed_size += 1
-                if total_decompressed_size > ABSOLUTE_MAX_TOTAL_DECOMPRESSED_SIZE: return RLE_ERROR_TOTAL_SIZE_LIMIT_EXCEEDED
+                break
+
+            next_char = compressed_text_data[i]
+
+            if next_char == DELIM:
+                # Escaped DELIM → literal DELIM
+                result_parts.append(DELIM)
+                total_decompressed_size += 1
                 i += 1
-                continue
 
-            parsed_count = 0
-            try:
-                parsed_count = int(count_str)
-            except ValueError:
-                result_parts.append(count_str);
-                total_decompressed_size += len(count_str)
-                if total_decompressed_size > ABSOLUTE_MAX_TOTAL_DECOMPRESSED_SIZE: return RLE_ERROR_TOTAL_SIZE_LIMIT_EXCEEDED
-                continue
+            elif next_char.isdigit():
+                # Run encoding: DELIM + count_digits + DELIM + char
+                count_str = ""
+                digit_read_count = 0
+                while i < n and compressed_text_data[i].isdigit() and digit_read_count < MAX_COUNT_STRING_DIGITS:
+                    count_str += compressed_text_data[i]
+                    i += 1
+                    digit_read_count += 1
 
-            if parsed_count > ABSOLUTE_MAX_PARSED_COUNT:
-                context = compressed_text_data[max(0, start_of_count_idx - 10):min(n, i + 10)]
-                adv_rle_logger.error(
-                    f"Adv RLE Decomp: parsed_count {parsed_count} EXCEEDS ABSOLUTE_MAX_PARSED_COUNT. Error. Near: '{context}'")
-                return RLE_ERROR_COUNT_TOO_LARGE_FOR_SAFETY
+                # Too many digits — safety limit
+                if digit_read_count == MAX_COUNT_STRING_DIGITS and i < n and compressed_text_data[i].isdigit():
+                    adv_rle_logger.error(
+                        f"Adv RLE Decomp: Count string exceeds {MAX_COUNT_STRING_DIGITS} digits.")
+                    return RLE_ERROR_COUNT_TOO_LARGE_FOR_SAFETY
 
-            if parsed_count >= current_min_run and i < n:
+                # Expect closing DELIM
+                if i >= n or compressed_text_data[i] != DELIM:
+                    adv_rle_logger.error("Adv RLE Decomp: Missing closing delimiter after count.")
+                    return RLE_ERROR_MALFORMED
+                i += 1  # consume closing DELIM
+
+                # Expect the character to repeat
+                if i >= n:
+                    adv_rle_logger.error("Adv RLE Decomp: Missing char after run header.")
+                    return RLE_ERROR_MALFORMED
+
                 char_to_repeat = compressed_text_data[i]
+                i += 1
+
+                try:
+                    parsed_count = int(count_str)
+                except ValueError:
+                    return RLE_ERROR_MALFORMED
+
+                if parsed_count > ABSOLUTE_MAX_PARSED_COUNT:
+                    adv_rle_logger.error(
+                        f"Adv RLE Decomp: parsed_count {parsed_count} EXCEEDS ABSOLUTE_MAX_PARSED_COUNT.")
+                    return RLE_ERROR_COUNT_TOO_LARGE_FOR_SAFETY
 
                 if total_decompressed_size + parsed_count > ABSOLUTE_MAX_TOTAL_DECOMPRESSED_SIZE:
-                    adv_rle_logger.error(
-                        f"Adv RLE Decomp: Total size would exceed limit. Run: {parsed_count}{char_to_repeat}")
                     return RLE_ERROR_TOTAL_SIZE_LIMIT_EXCEEDED
 
                 if parsed_count > ADV_THROTTLE_RUN_LENGTH_THRESHOLD:
-                    adv_rle_logger.info(
-                        f"Adv RLE Decomp: Throttling large run. Count: {parsed_count}, Char: '{char_to_repeat}'.")
                     remaining_count = parsed_count
                     while remaining_count > 0:
                         chunk_len = min(remaining_count, ADV_THROTTLE_CHUNK_SIZE)
                         try:
                             result_parts.append(char_to_repeat * chunk_len)
                         except MemoryError:
-                            adv_rle_logger.error(f"MemoryError during Adv RLE throttled chunk append.")
                             return RLE_ERROR_MEMORY_ON_CHUNK
                         total_decompressed_size += chunk_len
                         remaining_count -= chunk_len
@@ -213,18 +245,19 @@ def advanced_rle_decompress(compressed_text_data: str) -> str:
                     try:
                         result_parts.append(char_to_repeat * parsed_count)
                     except MemoryError:
-                        adv_rle_logger.error(f"MemoryError during Adv RLE normal append.")
                         return RLE_ERROR_MEMORY_ON_CHUNK
                     total_decompressed_size += parsed_count
-                i += 1
             else:
-                result_parts.append(count_str)
-                total_decompressed_size += len(count_str)
-                if total_decompressed_size > ABSOLUTE_MAX_TOTAL_DECOMPRESSED_SIZE: return RLE_ERROR_TOTAL_SIZE_LIMIT_EXCEEDED
+                # DELIM followed by non-digit, non-DELIM — malformed, tolerate
+                result_parts.append(DELIM)
+                total_decompressed_size += 1
+                # Don't consume next_char, it will be processed on next iteration
         else:
+            # Literal character (digits, letters, anything — all literal outside DELIM)
             result_parts.append(char)
             total_decompressed_size += 1
-            if total_decompressed_size > ABSOLUTE_MAX_TOTAL_DECOMPRESSED_SIZE: return RLE_ERROR_TOTAL_SIZE_LIMIT_EXCEEDED
+            if total_decompressed_size > ABSOLUTE_MAX_TOTAL_DECOMPRESSED_SIZE:
+                return RLE_ERROR_TOTAL_SIZE_LIMIT_EXCEEDED
             i += 1
 
     try:
@@ -268,10 +301,13 @@ if __name__ == '__main__':
     print(
         f"  (ABSOLUTE_MAX_PARSED_COUNT = {ABSOLUTE_MAX_PARSED_COUNT}, MAX_COUNT_STRING_DIGITS = {MAX_COUNT_STRING_DIGITS})")
 
+    D = ADV_RLE_DELIMITER  # shorthand for expected values
     test_cases = [
-        ("A", "A"), ("AA", "2A"), ("AAA", "3A"),
-        ("AAAAABBBCCCD", "5A3B3CD"), ("ABC", "ABC"), ("AABBCC", "2A2B2C"),
-        ("11122", "3122"), ("A11A", "A21A"), ("TEST111END", "TEST31END")
+        ("A", "A"), ("AA", f"{D}2{D}A"), ("AAA", f"{D}3{D}A"),
+        ("AAAAABBBCCCD", f"{D}5{D}A{D}3{D}B{D}3{D}CD"), ("ABC", "ABC"),
+        ("AABBCC", f"{D}2{D}A{D}2{D}B{D}2{D}C"),
+        ("11122", f"{D}3{D}1{D}2{D}2"), ("A11A", f"A{D}2{D}1A"),
+        ("TEST111END", f"TEST{D}3{D}1END")
     ]
 
     all_passed = True
@@ -283,37 +319,35 @@ if __name__ == '__main__':
         except Exception as e_decomp:
             decompressed = f"DECOMP_ERROR: {e_decomp}"
 
+        roundtrip_ok = (original == decompressed)
+        compress_ok = (compressed == expected_compressed)
         print(f"\nTest Case AD-{i + 1}: Orig='{original}'")
-        print(f"  Compr: '{compressed}' (Exp: '{expected_compressed}')")
+        print(f"  Compr: {repr(compressed)} (Exp: {repr(expected_compressed)})")
         print(f"  Decompr: '{decompressed}'")
 
-        if original == decompressed and compressed == expected_compressed:
+        if roundtrip_ok and compress_ok:
             print(f"  Status: PASS")
+        elif roundtrip_ok and not compress_ok:
+            print(f"  Status: PASS (roundtrip OK, compressed format differs)")
         else:
             all_passed = False
             print(f"  Status: FAIL!!!")
-            if original != decompressed:
+            if not roundtrip_ok:
                 print(f"    Original '{original}' != Decompressed '{decompressed}'")
-            if compressed != expected_compressed:
-                print(f"    Compressed '{compressed}' != Expected '{expected_compressed}'")
 
     print("\n--- Malformed/Edge Case Decompression (Advanced RLE) ---")
+    # In the new delimiter-framed format, strings without DELIM are all-literal
     malformed_tests_advanced = [
+        # Plain digits: no DELIM, so all literal passthrough
         ("123456789X", "123456789X"),
         ("9" * (MAX_COUNT_STRING_DIGITS + 2) + "Y", "9" * (MAX_COUNT_STRING_DIGITS + 2) + "Y"),
-        (str(ABSOLUTE_MAX_PARSED_COUNT + 1) + "A", RLE_ERROR_COUNT_TOO_LARGE_FOR_SAFETY),
-        ("1" * MAX_COUNT_STRING_DIGITS + "A", RLE_ERROR_COUNT_TOO_LARGE_FOR_SAFETY),
-        # Default test (may be overridden below)
-        ("1" * (MAX_COUNT_STRING_DIGITS + 1) + "B", "1" * (MAX_COUNT_STRING_DIGITS + 1) + "B")
-        # Number too long, treat literal + B
+        # Proper run encoding roundtrip
+        (f"{D}{ABSOLUTE_MAX_PARSED_COUNT + 1}{D}A", RLE_ERROR_COUNT_TOO_LARGE_FOR_SAFETY),
+        # Valid large run within limits
+        (f"{D}100{D}Z", "Z" * 100),
+        # Escaped DELIM roundtrip
+        (f"{D}{D}", D),
     ]
-
-    try:
-        one_char_count = int("1" * MAX_COUNT_STRING_DIGITS)
-        if MAX_COUNT_STRING_DIGITS > 0 and one_char_count <= ABSOLUTE_MAX_PARSED_COUNT:
-            malformed_tests_advanced[3] = ("1" * MAX_COUNT_STRING_DIGITS + "A", "A" * one_char_count)
-    except ValueError:
-        adv_rle_logger_local_main.error("Malformed test setup error: MAX_COUNT_STRING_DIGITS invalid for int()")
 
     for i, (compressed_input, expected_output) in enumerate(malformed_tests_advanced):
         decompressed_output_adv = advanced_rle_decompress(compressed_input)

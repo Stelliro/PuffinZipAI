@@ -1,4 +1,5 @@
 # PuffinZipAI_Project/run_gui.py
+import multiprocessing
 import sys
 import os
 import logging
@@ -120,6 +121,7 @@ except ImportError:
     pass
 
 if __name__ == "__main__":
+    multiprocessing.freeze_support()
     if 'LOGS_DIR_PATH' not in locals() or LOGS_DIR_PATH is None:
         LOGS_DIR_PATH = os.path.join(os.getcwd(), "logs")
 

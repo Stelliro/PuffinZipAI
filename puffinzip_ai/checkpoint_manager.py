@@ -8,6 +8,9 @@ import os
 import json
 import pickle
 import logging
+import tempfile
+import copy
+import threading
 from typing import Dict, List, Tuple, Optional
 from datetime import datetime
 from pathlib import Path
@@ -166,6 +169,7 @@ class CheckpointManager:
         os.makedirs(self.checkpoint_dir, exist_ok=True)
         
         self.checkpoints_metadata: Dict[str, CheckpointMetadata] = {}
+        self._save_lock = threading.Lock()
         self._load_checkpoint_index()
     
     @staticmethod
@@ -223,46 +227,84 @@ class CheckpointManager:
         Returns:
             True if successful, False otherwise
         """
+        checkpoint_path = None
         try:
-            # Create checkpoint filename
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            checkpoint_filename = f"checkpoint_{checkpoint_name}_{timestamp}.pkl"
-            checkpoint_path = os.path.join(self.checkpoint_dir, checkpoint_filename)
-            
-            # Save the optimizer state
-            with open(checkpoint_path, 'wb') as f:
-                pickle.dump(optimizer_state, f)
-            
-            # Create and store metadata
-            metadata = CheckpointMetadata(
-                name=checkpoint_name,
-                generation=generation,
-                best_fitness=best_fitness,
-                avg_fitness=avg_fitness,
-                dataset_size=dataset_size,
-                dataset_name=dataset_name,
-                population_size=population_size,
-            )
-            
-            # Calculate compression score
-            metadata.compression_score = CompressionScoreCalculator.calculate_score(
-                best_fitness=best_fitness,
-                avg_fitness=avg_fitness,
-            )
-            
-            # Store metadata with timestamped key
-            meta_key = f"{checkpoint_name}_{timestamp}"
-            self.checkpoints_metadata[meta_key] = metadata
-            self._save_checkpoint_index()
-            
-            self.logger.info(
-                f"Checkpoint '{checkpoint_name}' saved successfully. "
-                f"Gen: {generation}, Fitness: {best_fitness:.4f}, Score: {metadata.compression_score:.2f}"
-            )
-            return True
+            with self._save_lock:
+                # Create checkpoint filename
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                checkpoint_filename = f"checkpoint_{checkpoint_name}_{timestamp}.pkl"
+                checkpoint_path = os.path.join(self.checkpoint_dir, checkpoint_filename)
+                
+                # Deep-copy the optimizer state so we serialize a consistent
+                # snapshot even if the evolution thread mutates objects concurrently.
+                try:
+                    snapshot = copy.deepcopy(optimizer_state)
+                except Exception as dc_err:
+                    self.logger.warning(f"deepcopy failed ({dc_err}), pickling live state directly")
+                    snapshot = optimizer_state
+                
+                # Write to a temp file first, then atomically rename.
+                # This prevents 0-byte files when pickle.dump raises mid-write.
+                tmp_fd, tmp_path = tempfile.mkstemp(
+                    suffix='.pkl.tmp', dir=self.checkpoint_dir
+                )
+                try:
+                    with os.fdopen(tmp_fd, 'wb') as f:
+                        pickle.dump(snapshot, f)
+                    
+                    # Verify the temp file is not empty
+                    if os.path.getsize(tmp_path) == 0:
+                        os.remove(tmp_path)
+                        raise RuntimeError("Pickle produced empty file — population may contain unpicklable objects.")
+                    
+                    # Atomic rename (overwrites on Windows via os.replace)
+                    os.replace(tmp_path, checkpoint_path)
+                except BaseException:
+                    # Clean up partial temp file on ANY failure
+                    try:
+                        os.remove(tmp_path)
+                    except OSError:
+                        pass
+                    raise
+                
+                # Create and store metadata
+                metadata = CheckpointMetadata(
+                    name=checkpoint_name,
+                    generation=generation,
+                    best_fitness=best_fitness,
+                    avg_fitness=avg_fitness,
+                    dataset_size=dataset_size,
+                    dataset_name=dataset_name,
+                    population_size=population_size,
+                )
+                
+                # Calculate compression score
+                metadata.compression_score = CompressionScoreCalculator.calculate_score(
+                    best_fitness=best_fitness,
+                    avg_fitness=avg_fitness,
+                )
+                
+                # Store metadata with timestamped key
+                meta_key = f"{checkpoint_name}_{timestamp}"
+                self.checkpoints_metadata[meta_key] = metadata
+                self._save_checkpoint_index()
+                
+                self.logger.info(
+                    f"Checkpoint '{checkpoint_name}' saved successfully. "
+                    f"Gen: {generation}, Fitness: {best_fitness:.4f}, Score: {metadata.compression_score:.2f}"
+                )
+                return True
             
         except Exception as e:
             self.logger.error(f"Failed to save checkpoint '{checkpoint_name}': {e}", exc_info=True)
+            # Clean up any 0-byte checkpoint file left behind
+            if checkpoint_path and os.path.isfile(checkpoint_path):
+                try:
+                    if os.path.getsize(checkpoint_path) == 0:
+                        os.remove(checkpoint_path)
+                        self.logger.info(f"Removed empty checkpoint file: {checkpoint_path}")
+                except OSError:
+                    pass
             return False
     
     def load_checkpoint(self, checkpoint_key: str) -> Tuple[bool, Optional[Dict]]:

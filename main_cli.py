@@ -1,4 +1,5 @@
 import logging
+import multiprocessing
 import os
 import sys
 import threading
@@ -247,6 +248,7 @@ def main_menu(ai_agent, cli_logger):
         input("\nPress Enter to continue...")
 
 if __name__ == "__main__":
+    multiprocessing.freeze_support()
     if not os.path.exists(LOGS_DIR_PATH):
         try:
             os.makedirs(LOGS_DIR_PATH, exist_ok=True)

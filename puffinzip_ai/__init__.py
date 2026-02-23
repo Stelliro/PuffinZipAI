@@ -33,7 +33,7 @@ ALL_CONFIG_DEFAULTS_INIT_TIME = {
     "COMPRESSED_FILE_SUFFIX": ".pfz", "DEFAULT_LEN_THRESHOLDS": [50, 150, 500],
     "DEFAULT_BATCH_COMPRESS_EXTENSIONS": [".txt", ".log", ".md", ".csv"],
     "DEFAULT_ALLOWED_LEARN_EXTENSIONS": [".txt", ".md", ".py", ".js", ".html", ".css"],
-    "CORE_AI_LOG_FILENAME": "puffin_ai_core.log", "APP_VERSION": "0.9.6-dev",
+    "CORE_AI_LOG_FILENAME": "puffin_ai_core.log", "APP_VERSION": "0.9.7",
     "DEFAULT_LOG_LEVEL": "INFO", "LOG_MAX_BYTES": 5 * 1024 * 1024, "LOG_BACKUP_COUNT": 3,
     "DEBUG_LOG_CONSOLE_OUTPUT_ENABLED": False, # Added
     "DEFAULT_LEARNING_RATE": 0.1, "DEFAULT_DISCOUNT_FACTOR": 0.9, "DEFAULT_EXPLORATION_RATE": 1.0,
@@ -207,7 +207,32 @@ APP_VERSION_FROM_GLOBALS = globals().get('APP_VERSION', ALL_CONFIG_DEFAULTS_INIT
 
 PuffinZipAI_Selected_Core = None
 
-if "GPU" in str(CONFIG_TARGET_DEVICE_FROM_GLOBALS).upper():
+# --- Priority 1: Try NN agent if NN_ENABLED ---
+_nn_enabled = False
+try:
+    if loaded_config_module and getattr(loaded_config_module, 'NN_ENABLED', False):
+        _nn_enabled = True
+except Exception:
+    pass
+
+if _nn_enabled:
+    _init_logger_pza.info("NN_ENABLED=True in config. Attempting to import PuffinZipAI_NN...")
+    try:
+        _nn_core_mod = importlib.import_module(f".nn_core.nn_agent", package=_PACKAGE_NAME_FOR_IMPORTS)
+        PuffinZipAI_Selected_Core = _nn_core_mod.PuffinZipAI_NN
+        _init_logger_pza.info("Successfully imported PuffinZipAI_NN (DQN neural-network agent).")
+    except ImportError as e_nn_import:
+        _init_logger_pza.warning(
+            f"Failed to import NN agent (PyTorch may not be installed): {e_nn_import}. "
+            f"Falling back to standard agent."
+        )
+        PuffinZipAI_Selected_Core = None
+    except Exception as e_nn_other:
+        _init_logger_pza.warning(f"Unexpected error importing NN agent: {e_nn_other}. Falling back.")
+        PuffinZipAI_Selected_Core = None
+
+# --- Priority 2: GPU agent (CuPy-based Q-table) ---
+if PuffinZipAI_Selected_Core is None and "GPU" in str(CONFIG_TARGET_DEVICE_FROM_GLOBALS).upper():
     _init_logger_pza.info(f"Config target device '{CONFIG_TARGET_DEVICE_FROM_GLOBALS}' indicates GPU usage. Attempting to import GPU AI core...")
     try:
         PuffinZipAI_Selected_Core = importlib.import_module(f".gpu_core",
@@ -283,15 +308,23 @@ except ImportError as e:
     pass
 
 try:
+    print("DEBUG: Attempting to import evolution_core...") 
     _evo_core_mod = importlib.import_module(f".evolution_core", package=_PACKAGE_NAME_FOR_IMPORTS)
     globals()['EvolutionaryOptimizer'] = _evo_core_mod.EvolutionaryOptimizer
     globals()['EvolvingAgent'] = _evo_core_mod.EvolvingAgent
-    if globals()['EvolutionaryOptimizer']: _PACKAGE_EXPORTS.append("EvolutionaryOptimizer")
-    if globals()['EvolvingAgent']: _PACKAGE_EXPORTS.append("EvolvingAgent")
-except ImportError as e_evo_init:
-    pass
-except Exception as e_evo_gen_init:
-    pass
+    
+    if globals()['EvolutionaryOptimizer']: 
+        _PACKAGE_EXPORTS.append("EvolutionaryOptimizer")
+        print("DEBUG: EvolutionaryOptimizer loaded successfully.")
+    if globals()['EvolvingAgent']: 
+        _PACKAGE_EXPORTS.append("EvolvingAgent")
+
+except Exception as e:
+    print(f"\n!!! CRITICAL LOAD ERROR !!!")
+    print(f"Could not load evolution_core. The actual error is below:")
+    print(f"{'-'*40}")
+    traceback.print_exc()
+    print(f"{'-'*40}\n")
 
 temp_all = []
 for name_export_candidate in sorted(list(set(_PACKAGE_EXPORTS))):

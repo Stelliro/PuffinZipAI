@@ -6,6 +6,9 @@ echo  ======================================
 echo   PuffinZipAI Data Generator
 echo  ======================================
 
+rem Navigate to project root
+cd /d "%~dp0\.."
+
 :: 1. Environment Detection
 set "PYTHON_CMD=python"
 if exist "venv\Scripts\python.exe" set "PYTHON_CMD=venv\Scripts\python.exe"
@@ -19,6 +22,11 @@ if %ERRORLEVEL% NEQ 0 (
 )
 
 echo [INFO] Using Python: %PYTHON_CMD%
+
+echo [INFO] Clearing Python bytecode caches...
+for /d /r "." %%d in (__pycache__) do (
+    if exist "%%d" rd /s /q "%%d" >nul 2>&1
+)
 
 :: 2. Configuration Prompts (Optional)
 set /p "USER_COUNT=Enter number of files to generate [Default: 75]: "

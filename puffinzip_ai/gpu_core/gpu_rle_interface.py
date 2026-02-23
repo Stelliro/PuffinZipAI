@@ -23,9 +23,10 @@ try:
     from ..rle_utils import (
         ABSOLUTE_MAX_PARSED_COUNT,
         ABSOLUTE_MAX_TOTAL_DECOMPRESSED_SIZE,
+        MAX_COUNT_STRING_DIGITS,
         MIN_ENCODABLE_RUN_LENGTH,
         RLE_DECOMPRESSION_ERRORS,
-        RLE_DELIMITER,
+        RLE_RUN_MARKER,
         rle_compress as cpu_rle_compress,
         rle_decompress as cpu_rle_decompress,
     )
@@ -35,8 +36,9 @@ except ImportError:
     def cpu_rle_decompress(d, **k): return "ERROR_CPU_RLE_UNAVAILABLE_IN_GPU_IFACE"
     ABSOLUTE_MAX_PARSED_COUNT = 100 * 1024 * 1024
     ABSOLUTE_MAX_TOTAL_DECOMPRESSED_SIZE = 200 * 1024 * 1024
+    MAX_COUNT_STRING_DIGITS = 9
     MIN_ENCODABLE_RUN_LENGTH = 3
-    RLE_DELIMITER = '`'
+    RLE_RUN_MARKER = '\x02'
     RLE_DECOMPRESSION_ERRORS = {
         "ERROR_INVALID_RLE_FORMAT_NO_COUNT",
         "ERROR_INVALID_RLE_FORMAT_BAD_COUNT",
@@ -247,14 +249,16 @@ def _parse_compressed_segments(
     compressed_text: str,
 ) -> Union[str, Tuple[List[Tuple[bool, Union[str, Tuple[int, str]]]], int]]:
     """
-    Parse *compressed_text* into a list of segments.
+    Parse *compressed_text* (marker-framed format) into segments.
 
-    Returns either an error string (one of RLE_DECOMPRESSION_ERRORS) or a tuple of
-    (segments, total_output_length). Each segment is a tuple where the first element
-    indicates whether it is a run (True) or a literal (False). For run segments the
-    payload is (count, char); for literals it is the literal string.
+    Format:  MARKER + count_digits + MARKER + char   →  run
+             MARKER + MARKER                          →  literal marker
+             anything else                            →  literal
+
+    Returns either an error string or (segments, total_output_length).
     """
 
+    M = RLE_RUN_MARKER
     segments: List[Tuple[bool, Union[str, Tuple[int, str]]]] = []
     total_output_length = 0
     i = 0
@@ -263,32 +267,44 @@ def _parse_compressed_segments(
     while i < n:
         char = compressed_text[i]
 
-        if char.isdigit():
-            count_str = ""
-            while i < n and compressed_text[i].isdigit():
-                count_str += compressed_text[i]
+        if char == M:
+            i += 1
+            if i >= n:
+                # Trailing orphan marker
+                segments.append((False, M))
+                total_output_length += 1
+                break
+
+            next_char = compressed_text[i]
+
+            if next_char == M:
+                # Escaped marker → literal marker char
+                segments.append((False, M))
+                total_output_length += 1
                 i += 1
 
-            if i < n and compressed_text[i] == RLE_DELIMITER:
-                i += 1
+            elif next_char.isdigit():
+                # Run: MARKER + digits + MARKER + char
+                count_str = ""
+                digit_count = 0
+                while i < n and compressed_text[i].isdigit() and digit_count < MAX_COUNT_STRING_DIGITS:
+                    count_str += compressed_text[i]
+                    i += 1
+                    digit_count += 1
+
+                if digit_count == MAX_COUNT_STRING_DIGITS and i < n and compressed_text[i].isdigit():
+                    return "ERROR_COUNT_TOO_LARGE_FOR_SAFETY"
+
+                # Expect closing marker
+                if i >= n or compressed_text[i] != M:
+                    return "ERROR_MALFORMED_RLE_STRING"
+                i += 1  # consume closing marker
+
+                # Expect char to repeat
                 if i >= n:
                     return "ERROR_INVALID_RLE_FORMAT_NO_CHAR_AFTER_COUNT"
-
                 char_to_repeat = compressed_text[i]
                 i += 1
-
-                if (
-                    char_to_repeat == RLE_DELIMITER
-                    and i < n
-                    and compressed_text[i] == RLE_DELIMITER
-                ):
-                    # Escaped delimiter sequence; treat the digits and delimiter literally.
-                    segments.append((False, count_str))
-                    total_output_length += len(count_str)
-                    segments.append((False, RLE_DELIMITER))
-                    total_output_length += 1
-                    i += 1
-                    continue
 
                 try:
                     parsed_count = int(count_str)
@@ -304,18 +320,14 @@ def _parse_compressed_segments(
 
                 segments.append((True, (parsed_count, char_to_repeat)))
             else:
-                segments.append((False, count_str))
-                total_output_length += len(count_str)
-                if total_output_length > ABSOLUTE_MAX_TOTAL_DECOMPRESSED_SIZE:
-                    return "ERROR_TOTAL_SIZE_LIMIT_EXCEEDED"
+                # Marker followed by non-digit, non-marker — tolerate as literal
+                segments.append((False, M))
+                total_output_length += 1
+                # Don't consume next_char; it'll be handled next iteration
+
             continue
 
-        if char == RLE_DELIMITER and i + 1 < n and compressed_text[i + 1] == RLE_DELIMITER:
-            segments.append((False, RLE_DELIMITER))
-            total_output_length += 1
-            i += 2
-            continue
-
+        # Any other character is literal (including digits)
         segments.append((False, char))
         total_output_length += 1
         i += 1
@@ -378,18 +390,25 @@ def gpu_accelerated_rle_compress(
         )
         return cpu_rle_compress(text_data, method=method, min_run_len_override=min_run_len_override)
 
+    M = RLE_RUN_MARKER
     result_parts: List[str] = []
     for run_length, run_value in zip(run_lengths, run_values):
         char = chr(int(run_value))
-        if run_length >= min_run:
-            result_parts.append(str(int(run_length)))
-            result_parts.append(RLE_DELIMITER)
+        rl = int(run_length)
+        if rl >= min_run:
+            # Framed run: MARKER + count + MARKER + char
+            result_parts.append(M)
+            result_parts.append(str(rl))
+            result_parts.append(M)
             result_parts.append(char)
         else:
-            literal_block = char * int(run_length)
-            if RLE_DELIMITER in literal_block:
-                literal_block = literal_block.replace(RLE_DELIMITER, RLE_DELIMITER + RLE_DELIMITER)
-            result_parts.append(literal_block)
+            # Literal — escape any marker chars
+            for _ in range(rl):
+                if char == M:
+                    result_parts.append(M)
+                    result_parts.append(M)
+                else:
+                    result_parts.append(char)
 
     return "".join(result_parts)
 

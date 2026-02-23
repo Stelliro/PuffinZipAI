@@ -1,23 +1,41 @@
 @echo off
-setlocal EnableExtensions
+setlocal EnableExtensions EnableDelayedExpansion
 
 rem Ensure the script runs from the repository root
-cd /d "%~dp0"
+cd /d "%~dp0\.."
 
-set "VENV_DIR=venv"
+rem Check for .venv first, then venv
+set "VENV_DIR=.venv"
+if not exist "%VENV_DIR%\Scripts\python.exe" (
+    set "VENV_DIR=venv"
+)
 set "PYTHON_EXE=%VENV_DIR%\Scripts\python.exe"
 
 if exist "%PYTHON_EXE%" (
     echo Using existing virtual environment at "%VENV_DIR%".
 ) else (
-    echo Creating virtual environment at "%VENV_DIR%"...
-    set "PYTHON_CMD=python"
+    echo Creating virtual environment at ".venv"...
+    set "VENV_DIR=.venv"
+    set "PYTHON_EXE=.venv\Scripts\python.exe"
+
+    set "PYTHON_CMD="
+    rem Try py launcher first, then python on PATH
     py --version >nul 2>&1
-    if %errorlevel%==0 (
+    if !errorlevel!==0 (
         set "PYTHON_CMD=py"
+    ) else (
+        python --version >nul 2>&1
+        if !errorlevel!==0 (
+            set "PYTHON_CMD=python"
+        )
     )
 
-    %PYTHON_CMD% -m venv "%VENV_DIR%"
+    if not defined PYTHON_CMD (
+        echo Failed to find Python. Please ensure Python 3.9+ is installed and on PATH.
+        exit /b 1
+    )
+
+    !PYTHON_CMD! -m venv ".venv"
     if errorlevel 1 (
         echo Failed to create virtual environment. Please ensure Python 3.9+ is installed and on PATH.
         exit /b 1
@@ -44,6 +62,11 @@ if exist "%REQUIREMENTS%" (
     )
 ) else (
     echo "%REQUIREMENTS%" not found. Skipping dependency installation.
+)
+
+echo Clearing Python bytecode caches...
+for /d /r "." %%d in (__pycache__) do (
+    if exist "%%d" rd /s /q "%%d" >nul 2>&1
 )
 
 echo Launching PuffinZip GUI...
@@ -104,38 +127,4 @@ if not "%REPAIR_EXIT%" == "0" (
 if errorlevel 1 (
     echo Warning: Pip upgrade still failing after repair. Continuing with the existing version.
 )
-
-set "REQUIREMENTS=requirements.txt"
-if exist "%REQUIREMENTS%" (
-    echo Installing dependencies from "%REQUIREMENTS%"...
-    "%PYTHON_EXE%" -m pip install --upgrade pip
-    if errorlevel 1 (
-        echo Warning: Failed to upgrade pip. Attempting to repair pip with ensurepip...
-        "%PYTHON_EXE%" -m ensurepip --upgrade
-        if errorlevel 1 (
-            echo Warning: Failed to repair pip via ensurepip. Continuing with the existing version.
-        ) else (
-            "%PYTHON_EXE%" -m pip install --upgrade pip
-            if errorlevel 1 (
-                echo Warning: Pip upgrade still failing after repair. Continuing with the existing version.
-            )
-        )
-    )
-
-    "%PYTHON_EXE%" -m pip install -r "%REQUIREMENTS%"
-    if errorlevel 1 (
-        echo Failed to install dependencies listed in "%REQUIREMENTS%".
-        exit /b 1
-    )
-) else (
-    echo "%REQUIREMENTS%" not found. Skipping dependency installation.
-)
-
-echo Launching PuffinZip GUI...
-"%PYTHON_EXE%" run_gui.py %*
-set "EXIT_CODE=%ERRORLEVEL%"
-
-echo PuffinZip GUI exited with code %EXIT_CODE%.
-
-pause
-exit /b %EXIT_CODE%
+goto :EOF

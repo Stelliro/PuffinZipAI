@@ -28,6 +28,8 @@ MANIFEST
 # PyInstaller
 *.manifest
 *.spec
+!run_gui.spec
+!scripts/run_gui.spec
 
 # Installer logs
 pip-log.txt
@@ -146,12 +148,24 @@ Thumbs.db
 
 # Application logs and generated files
 logs/
+*.log
+*.log.*
 run_gui_critical_import_error.log
 run_gui_critical_runtime_error.log
 gui_state.json
+webui_metrics_cache.json
 
-# Benchmark data
+# Project runtime outputs
+checkpoints/
+gold_standard_results/
+
+# Generated packaging artifacts
+PuffinZipAI_A100_*.zip
+~*.zip
+
+# Benchmark data & caches
 benchmark_data/
+data/github_cache/
 
 # Build artifacts
 *.pyd
@@ -159,6 +173,8 @@ benchmark_data/
 # Temporary files
 *.tmp
 *.temp
+*.bak
+snippet.txt
 
 # Backup files
 *~
