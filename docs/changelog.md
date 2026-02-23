@@ -39,6 +39,16 @@ This document tracks the evolution of PuffinZipAI, including new features, signi
 
 **Dev Cycle 0.9.x (Current Focus: GPU Foundations, Advanced ELS Dynamics, UI Stability)**
 
+*   **Release 0.9.7 — Working Prototype (2026-02-23)**
+    *   _Release:_ First tagged release (`v0.9.7`) merged to `main` and pushed to GitHub.
+    *   _Fixed:_ **Checkpoint race condition** — `_rotate_auto_checkpoints()` now executes inside `self._checkpoint_lock`, preventing concurrent save/rotate corruption from the WebUI thread.
+    *   _Changed:_ Bumped `_max_auto_checkpoints` from 5 → **10** to retain more evolutionary history.
+    *   _Removed:_ ~50-line placeholder fallback classes (`PuffinZipAI_Placeholder`, `DummyLogger_Placeholder`) from `gpu_ai_agent.py`. Import failure now raises immediately; `DummyLogger` reduced to a minimal `type()` one-liner.
+    *   _Added:_ `.pzai` binary container format (`puffinzip_ai/pzai_format.py`) — self-describing archive with magic bytes, CRC32 integrity checks, multi-block support, and algorithm-ID tagging.
+    *   _Added:_ 17 tests for `.pzai` format (round-trip, file I/O, corruption detection, edge cases).
+    *   _Housekeeping:_ Repo cleanup — deleted stale `.bak` files, `__pycache__` dirs, runtime data (`gold_standard_results/`, `logs/`, `checkpoints/`, `github_cache/`). Updated `.gitignore` to cover all runtime artifacts. Restructured `requirements.txt` (core vs optional). Created root `README.md` with quick-start guide. Added `LICENSE` (PolyForm Noncommercial 1.0.0). Deleted old feature branches.
+    *   _Added:_ `scripts/run_webui_windows.bat` — auto-detects venv, kills stale server, installs Flask if missing, polls for readiness, opens browser.
+
 *   **Build 0.9.4 (Critical Startup & Import Fixes)**
     *   _Fixed:_ Resolved persistent `SyntaxError` in `gpu_ai_agent.py` fallback lambda definitions. This was a key blocker for `settings_gui.py` imports.
     *   _Fixed:_ Overhauled `puffinzip_ai/__init__.py`'s `config.py` auto-generation logic. Ensured correct ordering and `repr()` usage for all default variables (paths, literals, and os-dependent expressions), resolving cascading `ImportError`s and `NameError`s for config constants during application startup and module loading.

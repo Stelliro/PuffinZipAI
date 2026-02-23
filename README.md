@@ -129,4 +129,6 @@ PuffinZipAI/
 
 ## License
 
-This project is provided as a research prototype. See repository for license details.
+Licensed under the [PolyForm Noncommercial License 1.0.0](LICENSE).  
+You may use, modify, and share this software freely for any **non-commercial** purpose.  
+Commercial use is not permitted without separate written agreement from the licensor.

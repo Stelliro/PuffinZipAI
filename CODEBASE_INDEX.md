@@ -16,6 +16,7 @@ PuffinZipAI/
 ├── webui_theme_manager.py          # Cross-platform theme system
 ├── requirements.txt
 ├── README.md                       # Project overview & quick start
+├── LICENSE                         # PolyForm Noncommercial 1.0.0
 ├── PuffinZip.ico
 │
 ├── puffinzip_ai/                   # Core AI/compression package
