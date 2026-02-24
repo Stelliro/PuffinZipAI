@@ -5,6 +5,7 @@
 class PuffinZipAIApp {
     constructor() {
         this.isTraining = false;
+        this.canContinue = false;
         this.chart = null;
         this.popPage = 1;
         this.popTotalPages = 1;
@@ -119,6 +120,7 @@ class PuffinZipAIApp {
 
         q('btn-start')?.addEventListener('click', () => this.startTraining());
         q('btn-stop')?.addEventListener('click', () => this.stopTraining());
+        q('btn-continue')?.addEventListener('click', () => this.continueTraining());
         q('btn-reset')?.addEventListener('click', () => { window.resetChart?.(); });
         q('btn-save-checkpoint')?.addEventListener('click', () => this.saveCheckpoint());
         q('btn-view-checkpoints')?.addEventListener('click', () => this.viewCheckpoints());
@@ -196,6 +198,11 @@ class PuffinZipAIApp {
         const btnStart = document.getElementById('btn-start');
         if (btnStart) btnStart.disabled = true;
 
+        // If there's existing chart data from a previous run, archive and reset
+        if (this.chart && this.chart.data.labels.length > 0) {
+            window.archiveAndResetChart?.();
+        }
+
         const gens = document.getElementById('generations')?.value || 1000;
         const pop = document.getElementById('population-size')?.value || 500;
         const batch = document.getElementById('batch-size')?.value || 10;
@@ -234,20 +241,54 @@ class PuffinZipAIApp {
         } catch (e) { console.error(e); }
     }
 
+    async continueTraining() {
+        const btnContinue = document.getElementById('btn-continue');
+        if (btnContinue) btnContinue.disabled = true;
+
+        const gens = document.getElementById('generations')?.value || 100;
+        const infinite = document.getElementById('infinite-generations')?.checked || false;
+
+        try {
+            const res = await fetch('/api/training/continue', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    extra_generations: parseInt(gens),
+                    infinite
+                })
+            });
+            const d = await res.json();
+            if (d.success) {
+                this.isTraining = true;
+                this.updateUIState();
+            } else {
+                alert('Continue failed: ' + (d.error || 'Unknown error'));
+                if (btnContinue) btnContinue.disabled = false;
+            }
+        } catch (e) {
+            alert('Continue request failed: ' + e.message);
+            if (btnContinue) btnContinue.disabled = false;
+        }
+    }
+
     updateUIState() {
         const q = id => document.getElementById(id);
+        const btnContinue = q('btn-continue');
         if (this.isTraining) {
             if (q('btn-start')) q('btn-start').disabled = true;
             if (q('btn-stop'))  q('btn-stop').disabled = false;
+            if (btnContinue) btnContinue.disabled = true;
             if (q('training-status')) { q('training-status').innerText = 'Training'; q('training-status').style.color = '#4ade80'; }
             if (q('status-indicator')) q('status-indicator').className = 'status-indicator training';
             if (q('status-text')) q('status-text').innerText = 'Training';
         } else {
             if (q('btn-start')) q('btn-start').disabled = false;
             if (q('btn-stop'))  q('btn-stop').disabled = true;
+            // Show Continue only when a completed run exists
+            if (btnContinue) btnContinue.disabled = !this.canContinue;
             if (q('training-status')) { q('training-status').innerText = 'Idle'; q('training-status').style.color = ''; }
             if (q('status-indicator')) q('status-indicator').className = 'status-indicator';
-            if (q('status-text')) q('status-text').innerText = 'Ready';
+            if (q('status-text')) q('status-text').innerText = this.canContinue ? 'Completed' : 'Ready';
         }
     }
 
@@ -275,10 +316,11 @@ class PuffinZipAIApp {
         try {
             const res = await fetch('/api/status');
             const d = await res.json();
-            if (this.isTraining !== d.is_training) {
-                this.isTraining = d.is_training;
-                this.updateUIState();
-            }
+            const changed = this.isTraining !== d.is_training || this.canContinue !== !!d.can_continue;
+            this.isTraining = d.is_training;
+            this.canContinue = !!d.can_continue;
+            if (changed) this.updateUIState();
+
             const genEl = document.getElementById('gen-count');
             if (genEl) genEl.innerText = d.current_generation;
 

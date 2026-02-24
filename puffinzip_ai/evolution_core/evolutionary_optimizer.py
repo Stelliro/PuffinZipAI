@@ -1498,19 +1498,48 @@ class EvolutionaryOptimizer:
         self._prefetch_benchmark_future = None
         return None
 
-    def start_evolution(self):
-        self._send_to_gui(f"Starting Evolution Engine (Target: {self.target_device})...")
-        
-        self.population = self._create_initial_population()
-        if not self.population: 
-            self._send_to_gui("Population generation failed. Aborting.")
+    def continue_evolution(self, additional_gens: int = 100, switch_infinite: bool = False):
+        """Resume evolution from the last generation without recreating the population.
+
+        Parameters
+        ----------
+        additional_gens : int
+            Number of extra generations to run on top of the current elapsed count.
+        switch_infinite : bool
+            If *True*, enable infinite mode (ignores *additional_gens* limit).
+        """
+        if not self.population:
+            self._send_to_gui("No population to continue — use start_evolution() first.")
             return
+        if switch_infinite:
+            self.infinite_mode = True
+        else:
+            self.initial_num_generations = self.total_generations_elapsed + additional_gens
+            self.infinite_mode = False
+        if self.gui_stop_event:
+            self.gui_stop_event.clear()
+        self._send_to_gui(
+            f"Continuing evolution from gen {self.total_generations_elapsed} "
+            f"({'INFINITE' if self.infinite_mode else f'target {self.initial_num_generations}'})..."
+        )
+        self.start_evolution(_continue=True)
+
+    def start_evolution(self, _continue: bool = False):
+        if not _continue:
+            self._send_to_gui(f"Starting Evolution Engine (Target: {self.target_device})...")
+            
+            self.population = self._create_initial_population()
+            if not self.population: 
+                self._send_to_gui("Population generation failed. Aborting.")
+                return
+        else:
+            self._send_to_gui(f"Resuming Evolution Engine from gen {self.total_generations_elapsed}...")
 
         # Track previous fitness to detect improvement for adaptive refresh
-        _prev_best_fitness = 0.0
+        _prev_best_fitness = 0.0 if not _continue else (self.best_fitness_overall or 0.0)
         _fitness_improved_recently = False
         
-        gen = 0
+        gen = self.total_generations_elapsed if _continue else 0
         while True:
             if self.gui_stop_event.is_set(): break
             

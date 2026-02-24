@@ -39,6 +39,19 @@ This document tracks the evolution of PuffinZipAI, including new features, signi
 
 **Dev Cycle 0.9.x (Current Focus: GPU Foundations, Advanced ELS Dynamics, UI Stability)**
 
+*   **Build 0.9.8 — Continue Training & Run History (2026-02-24)**
+    *   _Added:_ **Continue Training** — new green "Continue" button in the WebUI navbar lets users extend evolution after a run completes (or is manually stopped) without losing the population.
+        *   `EvolutionaryOptimizer.continue_evolution()` resumes the evolution loop from the last elapsed generation, preserving the entire population and fitness state.
+        *   `start_evolution()` now accepts `_continue=True` to skip population recreation and start `gen` from `total_generations_elapsed`.
+        *   `POST /api/training/continue` endpoint reuses the existing optimizer — accepts `extra_generations` (default 100) and `infinite` (bool) to switch to infinite mode.
+    *   _Added:_ **Run History & Graph Reset** — pressing Start after a completed run archives the previous run's chart data and metrics, then resets the graph for the new run.
+        *   `AppState.archive_run()` stores run summary (generations, best fitness, best ratio, final tier) in `run_history[]` (up to 10 archived runs).
+        *   `GET /api/training/run-history` endpoint returns archived run summaries.
+        *   `archiveAndResetChart()` in `charts.js` deep-copies current chart datasets into `window._chartRunHistory` before clearing.
+    *   _Added:_ `GET /api/status` now returns `can_continue`, `run_number`, `completed_naturally`, `run_history_count` fields.
+    *   _Changed:_ `pollStatus()` in `app.js` tracks `canContinue` flag; `updateUIState()` enables/disables the Continue button accordingly.
+    *   _Added:_ `.btn-success` CSS class (green gradient) for the Continue button.
+
 *   **Release 0.9.7 — Working Prototype (2026-02-23)**
     *   _Release:_ First tagged release (`v0.9.7`) merged to `main` and pushed to GitHub.
     *   _Fixed:_ **Checkpoint race condition** — `_rotate_auto_checkpoints()` now executes inside `self._checkpoint_lock`, preventing concurrent save/rotate corruption from the WebUI thread.

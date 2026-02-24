@@ -126,6 +126,10 @@ class AppState:
         self.optimizer: Optional[EvolutionaryOptimizer] = None 
         self.stop_event: Optional[threading.Event] = None
         self._cached_snapshots: list = []  # Restored from disk cache
+        # --- Run history ---
+        self.run_number = 0              # Current run number (incremented on fresh start)
+        self.run_history = []            # List of archived run summaries
+        self.completed_naturally = False  # True when training ended without stop
 
     def reset(self):
         self.metrics_history = []
@@ -146,8 +150,26 @@ class AppState:
         self.current_novel_pipeline = 'none'
         self.current_gold_standard_win_rate = -1.0
         self.start_time = time.time()
+        self.completed_naturally = False
         with self.log_queue.mutex:
             self.log_queue.queue.clear()
+
+    def archive_run(self):
+        """Archive current run's metrics before starting a fresh run."""
+        if not self.metrics_history:
+            return
+        summary = {
+            'run_number': self.run_number,
+            'generations': len(self.metrics_history),
+            'best_fitness': self.current_fitness,
+            'best_ratio': self.current_compression_ratio,
+            'final_tier': self.current_complexity_tier,
+            'metrics': list(self.metrics_history),
+        }
+        self.run_history.append(summary)
+        # Keep at most 10 archived runs to prevent memory bloat
+        if len(self.run_history) > 10:
+            self.run_history = self.run_history[-10:]
 
     # --- Disk cache for metrics & snapshots ---
 
@@ -219,7 +241,12 @@ def status():
         'current_fitness': app_state.current_fitness,
         'current_generation': app_state.current_generation,
         'evolution_time': elapsed,
-        'system_limits': SYSTEM_LIMITS
+        'system_limits': SYSTEM_LIMITS,
+        'run_number': app_state.run_number,
+        'completed_naturally': app_state.completed_naturally,
+        'can_continue': (not app_state.is_training 
+                         and app_state.optimizer is not None),
+        'run_history_count': len(app_state.run_history),
     })
 
 @app.route('/api/metrics')
@@ -396,6 +423,10 @@ def methods():
 def start():
     if app_state.is_training: return jsonify({'success': False})
     
+    # Archive previous run before resetting (if there was one)
+    app_state.archive_run()
+    app_state.run_number += 1
+    
     config = request.json or {}
     pop_size = min(int(config.get('population_size', SYSTEM_LIMITS['default_pop'])), SYSTEM_LIMITS['max_pop'])
     num_gens = min(int(config.get('num_generations', SYSTEM_LIMITS['default_gens'])), SYSTEM_LIMITS['max_gens'])
@@ -498,7 +529,8 @@ def start():
             opt.start_evolution()
             if _debug_mode:
                 print("DEBUG: start_evolution finished normally.")
-            app_state.log_queue.put({'level': 'SUCCESS', 'message': 'Evolution Finished.'})
+            app_state.completed_naturally = not app_state.stop_event.is_set() if app_state.stop_event else True
+            app_state.log_queue.put({'level': 'SUCCESS', 'message': 'Evolution Finished. Press Continue to extend, or Start for a new run.'})
         except Exception as e:
             err_msg = f"CRITICAL THREAD ERROR: {e}"
             print(err_msg)
@@ -517,8 +549,71 @@ def start():
 @app.route('/api/training/stop', methods=['POST'])
 def stop():
     app_state.is_training = False
+    app_state.completed_naturally = False
     if app_state.stop_event: app_state.stop_event.set()
     return jsonify({'success': True})
+
+@app.route('/api/training/continue', methods=['POST'])
+def continue_training():
+    """Continue evolution from where it left off, reusing the existing optimizer and population.
+    
+    Extends initial_num_generations by the requested amount (default: 100).
+    Optionally switches to infinite mode.
+    Does NOT reset metrics or population — the chart continues from the last generation.
+    """
+    if app_state.is_training:
+        return jsonify({'success': False, 'error': 'Training is already running'})
+    if not app_state.optimizer:
+        return jsonify({'success': False, 'error': 'No previous run to continue — use Start instead'})
+    
+    config = request.json or {}
+    extra_gens = max(1, min(int(config.get('extra_generations', 100)), SYSTEM_LIMITS['max_gens']))
+    switch_infinite = bool(config.get('infinite', False))
+    
+    opt = app_state.optimizer
+    
+    # Clear the stop event so the loop can resume
+    if opt.gui_stop_event:
+        opt.gui_stop_event.clear()
+    app_state.stop_event = opt.gui_stop_event
+    
+    mode_str = "INFINITE" if switch_infinite else f"+{extra_gens} (total target {opt.total_generations_elapsed + extra_gens})"
+    app_state.log_queue.put({'level': 'INFO', 'message': f'Continuing evolution: {mode_str} from gen {opt.total_generations_elapsed}...'})
+    
+    def continue_thread():
+        app_state.is_training = True
+        app_state.completed_naturally = False
+        app_state.start_time = time.time()
+        try:
+            opt.continue_evolution(additional_gens=extra_gens, switch_infinite=switch_infinite)
+            app_state.completed_naturally = not opt.gui_stop_event.is_set()
+            app_state.log_queue.put({'level': 'SUCCESS', 'message': 'Evolution Finished. Press Continue to extend, or Start for a new run.'})
+        except Exception as e:
+            err_msg = f"CRITICAL CONTINUE ERROR: {e}"
+            print(err_msg)
+            traceback.print_exc()
+            app_state.log_queue.put({'level': 'ERROR', 'message': err_msg})
+        finally:
+            app_state.save_cache()
+            app_state.is_training = False
+    
+    t = threading.Thread(target=continue_thread, daemon=True)
+    t.start()
+    return jsonify({'success': True, 'mode': mode_str})
+
+@app.route('/api/training/run-history')
+def run_history():
+    """Return archived run summaries (metrics only, not full history arrays for large runs)."""
+    summaries = []
+    for run in app_state.run_history:
+        summaries.append({
+            'run_number': run.get('run_number', 0),
+            'generations': run.get('generations', 0),
+            'best_fitness': run.get('best_fitness', 0),
+            'best_ratio': run.get('best_ratio', 0),
+            'final_tier': run.get('final_tier', 'UNKNOWN'),
+        })
+    return jsonify({'runs': summaries, 'current_run': app_state.run_number})
 
 # --- CHECKPOINT API ---
 def _get_checkpoint_manager():
