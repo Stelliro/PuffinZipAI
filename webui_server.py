@@ -373,6 +373,21 @@ def _require_login():
     return redirect(url_for('login'))
 
 
+@app.after_request
+def _set_cache_headers(response):
+    """Prevent browsers from caching authenticated pages.
+
+    Without this, a browser may serve the dashboard from its disk cache
+    even when the user hasn't logged in on this session (e.g. after
+    switching from one tunnel endpoint to another on the same domain).
+    """
+    if request.endpoint and request.endpoint not in _PUBLIC_ROUTES:
+        response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
+        response.headers['Pragma'] = 'no-cache'
+        response.headers['Expires'] = '0'
+    return response
+
+
 @app.route('/login', methods=['GET', 'POST'])
 def login():
     error = None
@@ -563,6 +578,9 @@ def root():
 
 @app.route('/dashboard')
 def dashboard():
+    # Defense-in-depth: explicit auth gate (in addition to before_request hook)
+    if _AUTH_ENABLED and not session.get('authenticated'):
+        return redirect(url_for('login'))
     return render_template('index.html', version=APP_VERSION, url_prefix=_URL_PREFIX)
 
 @app.route('/api/status')
