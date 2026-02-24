@@ -240,8 +240,8 @@ PuffinZipAI/
 ---
 
 ### webui_credentials_manager.py
-**Lines**: ~130  
-**Purpose**: Auto-generates and persists `webui_credentials.json` in the project root on first WebUI launch. Produces a 20-character alphanumeric username, a 64-character alphanumeric password, and a 64-character hex secret key. Env-var overrides (`PUFFIN_USERNAME`, `PUFFIN_PASSWORD`, `PUFFIN_SECRET_KEY`) still take precedence when set. The credentials file is `.gitignore`-ed and `chmod 600`-ed on Linux.
+**Lines**: ~140  
+**Purpose**: Auto-generates and persists `webui_credentials.json` in the project root on first WebUI launch. Produces a 20-character alphanumeric username, a 64-character alphanumeric password, a 64-character hex secret key, and a `public_access` boolean (default `false`). When `public_access` is `true`, the server binds to `0.0.0.0` (network/internet-accessible); when `false`, it binds to `127.0.0.1` (local only). Env-var overrides (`PUFFIN_USERNAME`, `PUFFIN_PASSWORD`, `PUFFIN_SECRET_KEY`, `PUFFIN_PUBLIC_ACCESS`) still take precedence when set. The credentials file is `.gitignore`-ed and `chmod 600`-ed on Linux.
 
 **Functions**:
 | Line | Name | Description |
@@ -1743,8 +1743,8 @@ entire evolutionary pipeline (crossover, mutation, selection, GUI, WebUI) works 
 
 | Script | Platform | Purpose |
 |--------|----------|---------|
-| `start.sh` (repo root) | Linux/macOS | **Universal launcher** — auto-detects hardware (CPU, RAM, GPU type & VRAM), clones repo if missing, creates venv, installs deps, generates credentials, exports hardware profile env vars, starts WebUI on 0.0.0.0:5001. Run presets (Test / Medium / Max) are available in the WebUI. Env vars: `PUFFIN_GPUS`, `PUFFIN_WORKERS`, `PUFFIN_CACHE_MAX_MB`, `PUFFIN_CACHE_MAX_FILES`, `PUFFIN_PORT`, `PUFFIN_HOST`, `PUFFIN_REPO_URL`, `PUFFIN_REPO_BRANCH`, `GITHUB_TOKEN` |
-| `start.bat` (repo root) | Windows | **Universal launcher** — same as `start.sh` for Windows. Auto-detects hardware, creates venv, installs deps, generates credentials, starts WebUI |
+| `start.sh` (repo root) | Linux/macOS | **Universal launcher** — auto-detects hardware (CPU, RAM, GPU type & VRAM), clones repo if missing, creates venv, installs deps, generates credentials, reads `public_access` from credentials to determine bind address (`0.0.0.0` or `127.0.0.1`), exports hardware profile env vars, starts WebUI. Run presets (Test / Medium / Max) are available in the WebUI. Env vars: `PUFFIN_GPUS`, `PUFFIN_WORKERS`, `PUFFIN_CACHE_MAX_MB`, `PUFFIN_CACHE_MAX_FILES`, `PUFFIN_PORT`, `PUFFIN_HOST`, `PUFFIN_REPO_URL`, `PUFFIN_REPO_BRANCH`, `GITHUB_TOKEN` |
+| `start.bat` (repo root) | Windows | **Universal launcher** — same as `start.sh` for Windows. Auto-detects hardware, creates venv, installs deps, generates credentials, reads `public_access` from credentials to determine bind address, starts WebUI |
 | `run_webui_windows.bat` | Windows | Developer personal Windows launcher (port 5001) |
 | `run_gui.spec` | — | PyInstaller build spec for GUI executable |
 | `package_a100.bat` + `_package_a100_impl.ps1` | Windows | Packages all deployment files into a ZIP for pod deployment |

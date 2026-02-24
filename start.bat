@@ -141,7 +141,6 @@ if not defined PUFFIN_WORKERS (
 )
 
 REM ── Defaults ──────────────────────────────────────────────────────────────
-if not defined PUFFIN_HOST set "PUFFIN_HOST=0.0.0.0"
 if not defined PUFFIN_PORT set "PUFFIN_PORT=5001"
 if not defined PUFFIN_CACHE_MAX_MB set "PUFFIN_CACHE_MAX_MB=200"
 if not defined PUFFIN_CACHE_MAX_FILES set "PUFFIN_CACHE_MAX_FILES=500"
@@ -157,13 +156,24 @@ set "PUFFIN_DEFAULT_WORKERS=!PUFFIN_WORKERS!"
 REM ── Ensure credentials ───────────────────────────────────────────────────
 echo.
 echo [i] Ensuring WebUI credentials...
-%PYTHON_EXE% -c "from webui_credentials_manager import load_or_create_credentials, _CREDENTIALS_FILE; c = load_or_create_credentials(); print(f'  Credentials file: {_CREDENTIALS_FILE}'); print(f'  Username: {c[\"username\"]}'); print(f'  Password: {c[\"password\"]}')" 
+%PYTHON_EXE% -c "from webui_credentials_manager import load_or_create_credentials, _CREDENTIALS_FILE; c = load_or_create_credentials(); print(f'  Credentials file: {_CREDENTIALS_FILE}'); print(f'  Username: {c[\"username\"]}'); print(f'  Password: {c[\"password\"]}'); print(f'  Public access: {c.get(\"public_access\", False)}')"
 if errorlevel 1 (
     echo [ERROR] Failed to load or generate credentials.
     pause
     exit /b 1
 )
 echo [OK] Credentials ready
+
+REM ── Resolve HOST from credentials if not explicitly set ───────────────────
+if not defined PUFFIN_HOST (
+    for /f "usebackq delims=" %%h in (`%PYTHON_EXE% -c "from webui_credentials_manager import load_or_create_credentials; c = load_or_create_credentials(); print('0.0.0.0' if c.get('public_access', False) else '127.0.0.1')" 2^>nul`) do set "PUFFIN_HOST=%%h"
+    if not defined PUFFIN_HOST set "PUFFIN_HOST=127.0.0.1"
+    if "!PUFFIN_HOST!"=="0.0.0.0" (
+        echo [i] public_access=true : binding to 0.0.0.0 ^(network-accessible^)
+    ) else (
+        echo [i] public_access=false : binding to 127.0.0.1 ^(local only^)
+    )
+)
 
 REM ── Kill previous server on same port ─────────────────────────────────────
 for /f %%p in ('powershell -NoProfile -Command "$conn = Get-NetTCPConnection -LocalPort !PUFFIN_PORT! -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1; if ($conn) { $conn.OwningProcess }"') do (
@@ -200,6 +210,11 @@ echo   RAM:      !RAM_GB! GB
 echo   CPU:      !CPU_CORES! cores
 echo   Cache:    !PUFFIN_CACHE_MAX_MB! MB / !PUFFIN_CACHE_MAX_FILES! files max
 echo   Auth:     Enabled ^(credentials in webui_credentials.json^)
+if "!PUFFIN_HOST!"=="0.0.0.0" (
+    echo   Access:   Public ^(network-accessible^)
+) else (
+    echo   Access:   Local only ^(127.0.0.1^)
+)
 echo   Console:  Live logs below
 echo ========================================================
 echo.

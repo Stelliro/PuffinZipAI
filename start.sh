@@ -29,7 +29,7 @@ REPO_URL="${PUFFIN_REPO_URL:-https://github.com/Stelliro/PuffinZipAI.git}"
 REPO_BRANCH="${PUFFIN_REPO_BRANCH:-main}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PORT="${PUFFIN_PORT:-5001}"
-HOST="${PUFFIN_HOST:-0.0.0.0}"
+HOST="${PUFFIN_HOST:-}"
 WORKERS="${PUFFIN_WORKERS:-0}"
 CACHE_MAX_MB="${PUFFIN_CACHE_MAX_MB:-200}"
 CACHE_MAX_FILES="${PUFFIN_CACHE_MAX_FILES:-500}"
@@ -252,7 +252,33 @@ if evicted:
     print(f'  Evicted {evicted} stale/excess files')
 " 2>/dev/null || warn "Cache pre-flight check skipped (non-fatal)"
 
-# ── 6. Start server ─────────────────────────────────────────────────────────
+# ── 6. Credentials & host resolution ────────────────────────────────────────
+info "Ensuring WebUI credentials..."
+CRED_OUTPUT=$(python -c "
+from webui_credentials_manager import load_or_create_credentials, _CREDENTIALS_FILE
+c = load_or_create_credentials()
+print(f'  Credentials file: {_CREDENTIALS_FILE}')
+print(f'  Username: {c[\"username\"]}')
+print(f'  Password: {c[\"password\"]}')
+print(f'  Public access: {c.get(\"public_access\", False)}')
+# Machine-readable line for the launcher
+print(f'PUBLIC_ACCESS={\"1\" if c.get(\"public_access\", False) else \"0\"}')
+") || { err "Failed to load or generate credentials."; exit 1; }
+echo "$CRED_OUTPUT" | grep -v '^PUBLIC_ACCESS='
+log "Credentials ready"
+
+# Resolve HOST from credentials if not explicitly set via env
+if [[ -z "$HOST" ]]; then
+    if echo "$CRED_OUTPUT" | grep -q 'PUBLIC_ACCESS=1'; then
+        HOST="0.0.0.0"
+        info "public_access=true → binding to ${BOLD}0.0.0.0${NC} (network-accessible)"
+    else
+        HOST="127.0.0.1"
+        info "public_access=false → binding to ${BOLD}127.0.0.1${NC} (local only)"
+    fi
+fi
+
+# ── 7. Start server ─────────────────────────────────────────────────────────
 echo ""
 echo -e "${BOLD}════════════════════════════════════════════════════════════${NC}"
 echo -e "${BOLD}  Starting PuffinZipAI WebUI${NC}"
@@ -267,20 +293,13 @@ echo -e "  ${CYAN}RAM:${NC}      ${BOLD}${RAM_GB} GB${NC}"
 echo -e "  ${CYAN}CPU:${NC}      ${BOLD}${CPU_CORES} cores${NC}"
 echo -e "  ${CYAN}Cache:${NC}    ${BOLD}${CACHE_MAX_MB} MB / ${CACHE_MAX_FILES} files max (LRU eviction)${NC}"
 echo -e "  ${CYAN}Auth:${NC}     ${BOLD}Enabled (credentials in webui_credentials.json)${NC}"
+if [[ "$HOST" == "0.0.0.0" ]]; then
+echo -e "  ${CYAN}Access:${NC}   ${BOLD}Public (network-accessible)${NC}"
+else
+echo -e "  ${CYAN}Access:${NC}   ${BOLD}Local only (127.0.0.1)${NC}"
+fi
 echo -e "  ${CYAN}Console:${NC}  Live logs below — Ctrl+C to stop"
 echo -e "${BOLD}════════════════════════════════════════════════════════════${NC}"
-echo ""
-
-# ── Ensure credentials ──────────────────────────────────────────────────────
-info "Ensuring WebUI credentials..."
-python -c "
-from webui_credentials_manager import load_or_create_credentials, _CREDENTIALS_FILE
-c = load_or_create_credentials()
-print(f'  Credentials file: {_CREDENTIALS_FILE}')
-print(f'  Username: {c[\"username\"]}')
-print(f'  Password: {c[\"password\"]}')
-" || { err "Failed to load or generate credentials."; exit 1; }
-log "Credentials ready"
 echo ""
 
 # Export worker count so the WebUI can suggest it as default

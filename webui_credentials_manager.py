@@ -8,10 +8,15 @@ loaded so the same credentials are reused.
 Credential file format::
 
     {
-        "username":   "<20-char alphanumeric>",
-        "password":   "<64-char alphanumeric>",
-        "secret_key": "<64-char hex>"
+        "username":      "<20-char alphanumeric>",
+        "password":      "<64-char alphanumeric>",
+        "secret_key":    "<64-char hex>",
+        "public_access": true | false
     }
+
+When ``public_access`` is **true** the server binds to ``0.0.0.0`` (reachable
+over the network / internet).  When **false** (the default for freshly
+generated credentials) it binds to ``127.0.0.1`` (local only).
 
 Environment-variable overrides (``PUFFIN_USERNAME``, ``PUFFIN_PASSWORD``,
 ``PUFFIN_SECRET_KEY``) still take precedence when set.
@@ -33,6 +38,7 @@ class Credentials(TypedDict):
     username: str
     password: str
     secret_key: str
+    public_access: bool
 
 
 # ── Default paths ────────────────────────────────────────────────────────────
@@ -52,11 +58,17 @@ def _generate_random_string(length: int, pool: str = _ALPHA_POOL) -> str:
 
 
 def _generate_credentials() -> Credentials:
-    """Create a fresh set of credentials with random values."""
+    """Create a fresh set of credentials with random values.
+
+    ``public_access`` defaults to **False** (local-only).  Set it to
+    ``True`` in ``webui_credentials.json`` to expose the server over
+    the network.
+    """
     return Credentials(
         username=_generate_random_string(_USERNAME_LENGTH),
         password=_generate_random_string(_PASSWORD_LENGTH),
         secret_key=secrets.token_hex(_SECRET_KEY_LENGTH // 2),  # 32 bytes → 64 hex chars
+        public_access=False,
     )
 
 
@@ -71,6 +83,7 @@ def _load_credentials_file(path: Path = _CREDENTIALS_FILE) -> Credentials | None
                 username=str(data['username']),
                 password=str(data['password']),
                 secret_key=str(data['secret_key']),
+                public_access=bool(data.get('public_access', False)),
             )
     except (OSError, json.JSONDecodeError, KeyError, TypeError):
         pass
@@ -105,7 +118,8 @@ def load_or_create_credentials(path: Path = _CREDENTIALS_FILE) -> Credentials:
     env_pass = os.environ.get('PUFFIN_PASSWORD', '').strip()
     env_key  = os.environ.get('PUFFIN_SECRET_KEY', '').strip()
     if env_user and env_pass and env_key:
-        return Credentials(username=env_user, password=env_pass, secret_key=env_key)
+        return Credentials(username=env_user, password=env_pass, secret_key=env_key,
+                           public_access=os.environ.get('PUFFIN_PUBLIC_ACCESS', '').lower() in ('1', 'true', 'yes'))
 
     # 2. Try loading from file
     creds = _load_credentials_file(path)

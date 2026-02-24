@@ -212,6 +212,7 @@ _credentials = load_or_create_credentials()
 _AUTH_USERNAME = _credentials['username']
 _AUTH_PASSWORD = _credentials['password']
 app.secret_key = _credentials['secret_key']
+_PUBLIC_ACCESS = _credentials.get('public_access', False)
 _AUTH_ENABLED = True  # Always enabled — credentials are guaranteed non-empty
 
 # Session hardening
@@ -1327,7 +1328,8 @@ if __name__ == '__main__':
     multiprocessing.freeze_support()
     import argparse
     parser = argparse.ArgumentParser(description='PuffinZipAI Web UI Server')
-    parser.add_argument('--host', default='127.0.0.1', help='Host to bind to')
+    _default_host = '0.0.0.0' if _PUBLIC_ACCESS else '127.0.0.1'
+    parser.add_argument('--host', default=_default_host, help='Host to bind to (auto-set from credentials public_access)')
     parser.add_argument('--port', type=int, default=5001, help='Port to listen on')
     parser.add_argument('--debug', action='store_true', help='Enable debug mode (verbose logging, Flask debugger)')
     args = parser.parse_args()
@@ -1355,6 +1357,7 @@ if __name__ == '__main__':
     print(f"--- SERVER READY: http://{args.host}:{args.port} ---")
     print(f"--- Debug mode: {'ON' if args.debug else 'OFF'} ---")
     print(f"--- Auth: ENABLED ---")
+    print(f"--- Public access: {'ON (0.0.0.0)' if _PUBLIC_ACCESS else 'OFF (127.0.0.1 — local only)'} ---")
     print(f"--- Credentials file: {_CREDENTIALS_FILE} ---")
     print(f"--- Username: {_AUTH_USERNAME} ---")
     print(f"--- Password: {_AUTH_PASSWORD} ---")
