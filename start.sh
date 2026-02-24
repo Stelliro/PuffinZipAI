@@ -314,73 +314,82 @@ if [[ -z "$HOST" ]]; then
 fi
 
 # ── 7. Resolve available port ────────────────────────────────────────────────
-# On RunPod the proxy only forwards ports listed in RUNPOD_TCP_PORT_70 etc.
-# We build a candidate list: preferred port, RunPod-exposed ports, common fallbacks.
+# On RunPod, the proxy only forwards ports configured in the pod template.
+# GPU pods always expose 8888 (Jupyter) by default — so we use that.
+# We kill any existing process on the chosen port to guarantee availability.
 PREFERRED_PORT="$PORT"
-PORT_CANDIDATES=()
+
+_kill_port_occupant() {
+    local p="$1"
+    local pid
+    pid=$(fuser "$p/tcp" 2>/dev/null | tr -d '[:space:]')
+    if [[ -n "$pid" ]]; then
+        local name
+        name=$(ps -p "$pid" -o comm= 2>/dev/null || echo "unknown")
+        warn "Killing ${BOLD}$name${NC} (PID $pid) on port $p"
+        kill -9 "$pid" 2>/dev/null
+        sleep 1
+    fi
+}
 
 if [[ -n "${RUNPOD_POD_ID:-}" ]]; then
-    # Collect all RunPod-exposed TCP ports from the environment
-    RUNPOD_EXPOSED=()
-    while IFS= read -r varname; do
-        rp_port="${!varname}"
-        if [[ -n "$rp_port" && "$rp_port" =~ ^[0-9]+$ ]]; then
-            RUNPOD_EXPOSED+=("$rp_port")
-        fi
-    done < <(compgen -v | grep -E '^RUNPOD_TCP_PORT_[0-9]+$')
+    # ── RunPod GPU Pod ──
+    # Default exposed HTTP ports on RunPod templates: 8888 (always), plus
+    # whatever the user added.  The RUNPOD_TCP_PORT_* env vars only exist
+    # on serverless endpoints, not GPU pods, so we hardcode the known default.
+    RUNPOD_DEFAULT_PORTS=(8888 8080 3000 7860 5001)
 
-    if [[ ${#RUNPOD_EXPOSED[@]} -gt 0 ]]; then
-        info "RunPod exposed TCP ports: ${BOLD}${RUNPOD_EXPOSED[*]}${NC}"
+    if [[ "$PREFERRED_PORT" != "5001" ]]; then
+        # User explicitly set PUFFIN_PORT — honour it, kill occupant
+        PORT="$PREFERRED_PORT"
+        info "Using explicitly requested port ${BOLD}$PORT${NC}"
+    else
+        # No explicit port — pick the first RunPod-exposed port we can use
+        PORT=""
+        for rp in "${RUNPOD_DEFAULT_PORTS[@]}"; do
+            if ! _port_in_use "$rp"; then
+                PORT="$rp"
+                break
+            fi
+        done
+        # All common ports occupied — take over 8888 (most likely to be proxied)
+        if [[ -z "$PORT" ]]; then
+            PORT=8888
+        fi
+        if [[ "$PORT" != "$PREFERRED_PORT" ]]; then
+            info "RunPod: using proxy-exposed port ${BOLD}$PORT${NC} (default 5001 is not exposed through RunPod's proxy)"
+        fi
     fi
 
-    # Check if preferred port is in the RunPod exposed list
-    _port_exposed=false
-    for rp in "${RUNPOD_EXPOSED[@]}"; do
-        if [[ "$rp" == "$PREFERRED_PORT" ]]; then
-            _port_exposed=true
-            break
+    # Kill whatever currently occupies the port (e.g. Jupyter on 8888)
+    if _port_in_use "$PORT"; then
+        _kill_port_occupant "$PORT"
+    fi
+else
+    # ── Non-RunPod: find a free port from candidates ──
+    PORT_CANDIDATES=("$PREFERRED_PORT" 5001 5002 5003 8080 8888 9000)
+
+    # Remove duplicates while preserving order
+    declare -A _seen_ports
+    UNIQUE_CANDIDATES=()
+    for p in "${PORT_CANDIDATES[@]}"; do
+        if [[ -z "${_seen_ports[$p]:-}" ]]; then
+            _seen_ports[$p]=1
+            UNIQUE_CANDIDATES+=("$p")
         fi
     done
 
-    if $_port_exposed; then
-        # Preferred port is exposed — use it if available
-        PORT_CANDIDATES=("$PREFERRED_PORT" "${RUNPOD_EXPOSED[@]}")
-    else
-        # Preferred port is NOT exposed by RunPod — try exposed ports first
-        if [[ ${#RUNPOD_EXPOSED[@]} -gt 0 ]]; then
-            warn "Port ${BOLD}$PREFERRED_PORT${NC} is not in RunPod's exposed HTTP ports"
-            info "Trying RunPod-exposed ports instead..."
-            PORT_CANDIDATES=("${RUNPOD_EXPOSED[@]}" "$PREFERRED_PORT")
-        else
-            PORT_CANDIDATES=("$PREFERRED_PORT")
-        fi
+    CHOSEN_PORT=$(_find_free_port "${UNIQUE_CANDIDATES[@]}")
+    if [[ -z "$CHOSEN_PORT" ]]; then
+        err "No available port found. Tried: ${UNIQUE_CANDIDATES[*]}"
+        exit 1
     fi
-else
-    # Non-RunPod: preferred → common fallbacks
-    PORT_CANDIDATES=("$PREFERRED_PORT" 5001 5002 5003 8080 8888 9000)
-fi
-
-# Remove duplicates while preserving order
-declare -A _seen_ports
-UNIQUE_CANDIDATES=()
-for p in "${PORT_CANDIDATES[@]}"; do
-    if [[ -z "${_seen_ports[$p]:-}" ]]; then
-        _seen_ports[$p]=1
-        UNIQUE_CANDIDATES+=("$p")
+    if [[ "$CHOSEN_PORT" != "$PREFERRED_PORT" ]]; then
+        warn "Port ${BOLD}$PREFERRED_PORT${NC} is in use → switching to ${BOLD}$CHOSEN_PORT${NC}"
     fi
-done
-
-# Find a free port from the candidates
-CHOSEN_PORT=$(_find_free_port "${UNIQUE_CANDIDATES[@]}")
-if [[ -z "$CHOSEN_PORT" ]]; then
-    err "No available port found. Tried: ${UNIQUE_CANDIDATES[*]}"
-    exit 1
+    PORT="$CHOSEN_PORT"
 fi
 
-if [[ "$CHOSEN_PORT" != "$PREFERRED_PORT" ]]; then
-    warn "Port ${BOLD}$PREFERRED_PORT${NC} is in use → switching to ${BOLD}$CHOSEN_PORT${NC}"
-fi
-PORT="$CHOSEN_PORT"
 info "Using port ${BOLD}$PORT${NC}"
 
 # ── 8. Detect connect URL (RunPod proxy / public IP / local) ────────────────
