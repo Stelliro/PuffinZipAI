@@ -194,25 +194,35 @@ for /d /r "." %%d in (__pycache__) do (
     if exist "%%d" rd /s /q "%%d" >nul 2>&1
 )
 
-REM ── Detect public IP (best-effort) ────────────────────────────────────────
-set "PUBLIC_IP="
-if "!PUFFIN_HOST!"=="0.0.0.0" (
-    for /f "usebackq delims=" %%i in (`powershell -NoProfile -Command "try { (Invoke-WebRequest -UseBasicParsing -Uri 'https://api.ipify.org' -TimeoutSec 3).Content.Trim() } catch { try { (Invoke-WebRequest -UseBasicParsing -Uri 'https://ifconfig.me' -TimeoutSec 3).Content.Trim() } catch { '' } }"`) do set "PUBLIC_IP=%%i"
+REM ── Detect connect URL (RunPod proxy / public IP / local) ────────────────
+set "CONNECT_URL="
+set "PLATFORM="
+if defined RUNPOD_POD_ID (
+    set "PLATFORM=RunPod"
+    set "CONNECT_URL=https://!RUNPOD_POD_ID!-!PUFFIN_PORT!.proxy.runpod.net"
+    echo [i] RunPod detected ^(pod !RUNPOD_POD_ID!^)
+) else if "!PUFFIN_HOST!"=="0.0.0.0" (
+    for /f "usebackq delims=" %%i in (`powershell -NoProfile -Command "try { (Invoke-WebRequest -UseBasicParsing -Uri 'https://api.ipify.org' -TimeoutSec 3).Content.Trim() } catch { try { (Invoke-WebRequest -UseBasicParsing -Uri 'https://ifconfig.me' -TimeoutSec 3).Content.Trim() } catch { '' } }"`) do (
+        if not "%%i"=="" set "CONNECT_URL=http://%%i:!PUFFIN_PORT!"
+    )
 )
 
 REM ── Start server ──────────────────────────────────────────────────────────
 echo.
 echo ========================================================
 echo   Starting PuffinZipAI WebUI
-if defined PUBLIC_IP (
-    if not "!PUBLIC_IP!"=="" (
-        echo   Connect:  http://!PUBLIC_IP!:!PUFFIN_PORT!
+if defined CONNECT_URL (
+    if not "!CONNECT_URL!"=="" (
+        echo   Connect:  !CONNECT_URL!
         echo   Bind:     !PUFFIN_HOST!:!PUFFIN_PORT!
     ) else (
         echo   URL:      http://!PUFFIN_HOST!:!PUFFIN_PORT!
     )
 ) else (
     echo   URL:      http://!PUFFIN_HOST!:!PUFFIN_PORT!
+)
+if defined PLATFORM (
+    echo   Platform: !PLATFORM!
 )
 echo   Workers:  !PUFFIN_WORKERS! CPU workers
 if !GPU_COUNT! gtr 0 (

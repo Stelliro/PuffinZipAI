@@ -1354,28 +1354,34 @@ if __name__ == '__main__':
         # Normal mode: silence repetitive "GET /api/status 200" messages
         logging.getLogger('werkzeug').setLevel(logging.ERROR)
     
-    # Detect public IP when public access is enabled
-    _public_ip = ''
-    if _PUBLIC_ACCESS:
+    # Detect connect URL: RunPod proxy > public IP > local
+    _connect_url = ''
+    _platform = ''
+    _runpod_id = os.environ.get('RUNPOD_POD_ID', '').strip()
+    if _runpod_id:
+        _platform = 'RunPod'
+        _connect_url = f'https://{_runpod_id}-{args.port}.proxy.runpod.net'
+    elif _PUBLIC_ACCESS:
         import urllib.request
         for _ip_url in ('https://api.ipify.org', 'https://ifconfig.me', 'https://icanhazip.com'):
             try:
                 with urllib.request.urlopen(_ip_url, timeout=3) as _resp:
-                    _public_ip = _resp.read().decode().strip()
-                    if _public_ip:
+                    _pub = _resp.read().decode().strip()
+                    if _pub:
+                        _connect_url = f'http://{_pub}:{args.port}'
                         break
             except Exception:
                 continue
 
     print(f">>> [SUCCESS] PuffinZipAI {APP_VERSION} loaded correctly.")
-    if _public_ip:
-        print(f"--- CONNECT URL: http://{_public_ip}:{args.port} ---")
+    if _connect_url:
+        print(f"--- CONNECT URL: {_connect_url} ---")
     print(f"--- SERVER READY: http://{args.host}:{args.port} ---")
     print(f"--- Debug mode: {'ON' if args.debug else 'OFF'} ---")
     print(f"--- Auth: ENABLED ---")
     print(f"--- Public access: {'ON (0.0.0.0)' if _PUBLIC_ACCESS else 'OFF (127.0.0.1 — local only)'} ---")
-    if _public_ip:
-        print(f"--- Public IP: {_public_ip} ---")
+    if _platform:
+        print(f"--- Platform: {_platform} ---")
     print(f"--- Credentials file: {_CREDENTIALS_FILE} ---")
     print(f"--- Username: {_AUTH_USERNAME} ---")
     print(f"--- Password: {_AUTH_PASSWORD} ---")

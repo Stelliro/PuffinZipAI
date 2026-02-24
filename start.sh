@@ -278,25 +278,44 @@ if [[ -z "$HOST" ]]; then
     fi
 fi
 
-# ── 7. Detect public IP (best-effort, non-blocking) ────────────────────────
-PUBLIC_IP=""
-if [[ "$HOST" == "0.0.0.0" ]]; then
+# ── 7. Detect connect URL (RunPod proxy / public IP / local) ────────────────
+CONNECT_URL=""
+PLATFORM=""
+if [[ -n "${RUNPOD_POD_ID:-}" ]]; then
+    # RunPod: pods are behind NAT — use the RunPod reverse-proxy URL
+    PLATFORM="RunPod"
+    CONNECT_URL="https://${RUNPOD_POD_ID}-${PORT}.proxy.runpod.net"
+    info "RunPod detected (pod ${BOLD}${RUNPOD_POD_ID}${NC})"
+elif [[ -n "${VAST_CONTAINERLABEL:-}" ]]; then
+    PLATFORM="Vast.ai"
+    # Vast.ai: construct proxy URL if available
+    if [[ -n "${VAST_TCP_PORT_MAP:-}" ]]; then
+        info "Vast.ai detected — check your Vast dashboard for the connect URL"
+    fi
+elif [[ "$HOST" == "0.0.0.0" ]]; then
+    # Generic cloud / bare metal — try to detect a routable public IP
     PUBLIC_IP=$(curl -s --max-time 3 https://api.ipify.org 2>/dev/null \
              || curl -s --max-time 3 https://ifconfig.me 2>/dev/null \
              || curl -s --max-time 3 https://icanhazip.com 2>/dev/null \
              || echo "")
-    PUBLIC_IP=$(echo "$PUBLIC_IP" | tr -d '[:space:]')  # trim whitespace
+    PUBLIC_IP=$(echo "$PUBLIC_IP" | tr -d '[:space:]')
+    if [[ -n "$PUBLIC_IP" ]]; then
+        CONNECT_URL="http://$PUBLIC_IP:$PORT"
+    fi
 fi
 
 # ── 8. Start server ─────────────────────────────────────────────────────────
 echo ""
 echo -e "${BOLD}════════════════════════════════════════════════════════════${NC}"
 echo -e "${BOLD}  Starting PuffinZipAI WebUI${NC}"
-if [[ -n "$PUBLIC_IP" ]]; then
-echo -e "  ${CYAN}Connect:${NC}  ${BOLD}http://$PUBLIC_IP:$PORT${NC}"
+if [[ -n "$CONNECT_URL" ]]; then
+echo -e "  ${CYAN}Connect:${NC}  ${BOLD}$CONNECT_URL${NC}"
 echo -e "  ${CYAN}Bind:${NC}     ${BOLD}$HOST:$PORT${NC}"
 else
 echo -e "  ${CYAN}URL:${NC}      ${BOLD}http://$HOST:$PORT${NC}"
+fi
+if [[ -n "$PLATFORM" ]]; then
+echo -e "  ${CYAN}Platform:${NC} ${BOLD}$PLATFORM${NC}"
 fi
 echo -e "  ${CYAN}Workers:${NC}  ${BOLD}$WORKERS CPU workers${NC}"
 if [[ "$GPU_COUNT" -gt 0 ]]; then
