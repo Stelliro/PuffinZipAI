@@ -345,6 +345,82 @@ MIN_SIZE_SHRINK_FACTOR = 0.5
 TIER_HYSTERESIS_MARGIN = 2.0
 
 
+# ---------------------------------------------------------------------------
+# CONTINUOUS COMPLEXITY (1% INCREMENTS)
+# ---------------------------------------------------------------------------
+# complexity_pct (0-100) replaces the old 5-tier enum as the primary
+# complexity driver.  The DataComplexity enum is derived from the pct
+# for backward-compat.  Data-generation parameters interpolate smoothly.
+
+# Piecewise-linear knots matching the old tier ratio gates.
+# (pct, required_ratio_%)  — to advance TO <pct>, must have ratio ≥ y.
+_RATIO_GATE_KNOTS = [
+    (0, 0.0), (20, 25.0), (40, 45.0), (60, 60.0), (80, 70.0), (100, 80.0),
+]
+
+# Same structure for gold-standard win-rate gates (0-1 fraction).
+_GS_GATE_KNOTS = [
+    (0, 0.0), (20, 0.10), (40, 0.30), (60, 0.50), (80, 0.70), (100, 0.80),
+]
+
+
+def _piecewise_lerp(knots: list, x: float) -> float:
+    """Piecewise-linear interpolation through *(x, y)* knots."""
+    if x <= knots[0][0]:
+        return knots[0][1]
+    for i in range(len(knots) - 1):
+        x0, y0 = knots[i]
+        x1, y1 = knots[i + 1]
+        if x0 <= x <= x1:
+            t = (x - x0) / (x1 - x0) if x1 != x0 else 0.0
+            return y0 + t * (y1 - y0)
+    return knots[-1][1]
+
+
+def _ratio_gate_for_pct(pct: int) -> float:
+    """Required compression-ratio (%) to advance **to** *pct*."""
+    return _piecewise_lerp(_RATIO_GATE_KNOTS, pct)
+
+
+def _gs_gate_for_pct(pct: int) -> float:
+    """Required gold-standard win-rate (0-1) to advance **to** *pct*."""
+    return _piecewise_lerp(_GS_GATE_KNOTS, pct)
+
+
+def _tier_from_pct(pct: int) -> 'DataComplexity':
+    """Map continuous complexity percentage (0-100) → DataComplexity enum."""
+    if pct < 20:
+        return DataComplexity.VERY_SIMPLE
+    elif pct < 40:
+        return DataComplexity.SIMPLE
+    elif pct < 60:
+        return DataComplexity.MODERATE
+    elif pct < 80:
+        return DataComplexity.COMPLEX
+    else:
+        return DataComplexity.VERY_COMPLEX
+
+
+def _interpolate_generation_params(pct: int) -> tuple:
+    """Smoothly interpolate data-generation params from *pct* (0-100).
+
+    Returns ``(run_likelihood, unique_focus, max_run_cap)``.
+    Higher pct → less compressible data (fewer runs, broader char pool,
+    shorter max runs).
+    """
+    t = max(0.0, min(1.0, pct / 100.0))
+    # run_likelihood: 0.60 → 0.10  (less repetition)
+    run_likelihood = 0.60 - 0.50 * t
+    run_likelihood = max(0.05, min(0.70, run_likelihood + random.uniform(-0.05, 0.05)))
+    # unique_focus: 0.30 → 0.90  (wider char pool)
+    unique_focus = 0.30 + 0.60 * t
+    unique_focus = max(0.10, min(0.95, unique_focus + random.uniform(-0.05, 0.05)))
+    # max_run_cap: 150 → 4  (exponential decay)
+    max_run_cap = int(150 * (4.0 / 150.0) ** t)
+    max_run_cap = max(2, max_run_cap + random.randint(-2, 2))
+    return run_likelihood, unique_focus, max_run_cap
+
+
 def get_generation_size_limits(generation: int, best_fitness: float = 0.0,
                                previous_tier_index: int = -1,
                                best_compression_ratio: float = 0.0,
@@ -570,6 +646,9 @@ class BenchmarkItemEvaluator:
         # on the CURRENT tier's data.  Prevents jumping from VERY_SIMPLE to
         # VERY_COMPLEX in a single generation.
         self._current_complexity_tier = DataComplexity.VERY_SIMPLE
+        # Continuous complexity percentage (0-100).  Advances 1 % per
+        # qualifying refresh.  The DataComplexity enum is derived from this.
+        self._complexity_pct: int = 0
         self._refreshes_at_current_tier = 0  # dwell counter — min refreshes before advancement
         self.logger.info(
             f"BenchmarkItemEvaluator initialized. Dynamic Benchmarking: {self.dynamic_benchmarking_enabled}.")
@@ -612,33 +691,17 @@ class BenchmarkItemEvaluator:
             length = max(1, random.randint(min_l, max_l))
 
         # --- 2. Complexity → generation parameters ---
-        # run_likelihood : probability each chunk is a repeated run
-        # unique_focus   : controls character-pool breadth (higher = more unique)
-        # max_run_cap    : hard ceiling on any single run length
-        run_likelihood = 0.3
-        unique_focus = 0.5
-        max_run_cap = length  # no cap by default
-
-        if complexity_level == DataComplexity.VERY_SIMPLE:
-            run_likelihood = random.uniform(0.5, 0.7)
-            unique_focus = random.uniform(0.2, 0.4)
-            max_run_cap = random.randint(80, 150)   # cap runs so data isn't trivially compressible
-        elif complexity_level == DataComplexity.SIMPLE:
-            run_likelihood = random.uniform(0.4, 0.6)
-            unique_focus = random.uniform(0.3, 0.5)
-            max_run_cap = random.randint(40, 80)    # tighter cap than VERY_SIMPLE
-        elif complexity_level == DataComplexity.MODERATE:
+        # Use continuous interpolation from _complexity_pct (0-100) for
+        # smooth, 1 %-at-a-time scaling.  Falls back to tier-based
+        # defaults for USER_DEFINED_LARGE or unexpected enum values.
+        if complexity_level == DataComplexity.USER_DEFINED_LARGE:
+            # Legacy path: MODERATE-like defaults for user-defined sizes
             run_likelihood = random.uniform(0.2, 0.4)
             unique_focus = random.uniform(0.5, 0.7)
             max_run_cap = 50
-        elif complexity_level == DataComplexity.COMPLEX:
-            run_likelihood = random.uniform(0.1, 0.25)
-            unique_focus = random.uniform(0.65, 0.85)
-            max_run_cap = 10
-        elif complexity_level == DataComplexity.VERY_COMPLEX:
-            run_likelihood = random.uniform(0.05, 0.15)
-            unique_focus = random.uniform(0.8, 0.95)
-            max_run_cap = 4
+        else:
+            run_likelihood, unique_focus, max_run_cap = (
+                _interpolate_generation_params(self._complexity_pct))
 
         # --- 3. Character pool ---
         alpha_num_sym = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*()_+-=[]{};':\",./<>? "
@@ -957,39 +1020,28 @@ class BenchmarkItemEvaluator:
 
     # Minimum number of benchmark refreshes the AI must spend at the
     # current complexity tier BEFORE it can advance to the next one.
-    # This prevents the AI from sprinting through all tiers in < 15 gens
-    # on trivially-compressible synthetic data.
-    _MIN_REFRESHES_BEFORE_ADVANCE = 2
+    # Minimum dwell refreshes before the next 1 % advancement.
+    # With 1 %-at-a-time steps the pace is already gradual, so 1
+    # refresh per step is sufficient.
+    _MIN_REFRESHES_BEFORE_ADVANCE = 1
 
     def determine_target_complexity(self, population_average_fitness: float,
                                      best_compression_ratio: float = 0.0,
                                      gold_standard_win_rate: float = -1.0) -> DataComplexity:
-        """Determine the complexity tier, enforcing single-step advancement
-        with minimum dwell time and gold-standard gating, but allowing
-        **multi-step drops**.
+        """Determine the complexity, advancing by **1 %** at a time.
 
-        Complexity can only advance **one tier at a time**, AND the AI must
-        have spent at least ``_MIN_REFRESHES_BEFORE_ADVANCE`` refreshes at
-        the current tier before advancement is allowed.  To advance from
-        tier N to tier N+1:
-          - the compression ratio must meet the next tier's ratio gate
-            (``COMPLEXITY_RATIO_GATES``), AND
-          - the gold standard win rate must meet the next tier's gold
-            standard gate (``COMPLEXITY_GOLD_STANDARD_GATES``), unless
-            no gold-standard data is available (win_rate < 0).
+        ``_complexity_pct`` (0-100) is the primary complexity knob.  Each
+        refresh can advance it by at most 1 percentage point, gated by
+        smoothly interpolated compression-ratio and gold-standard
+        thresholds.  The ``DataComplexity`` enum tier is derived from the
+        percentage for backward compatibility.
 
-        This prevents the AI from jumping from VERY_SIMPLE to VERY_COMPLEX in
-        a few generations just because synthetic data is easy to compress.
-
-        Complexity can **DROP multiple tiers in one refresh** proportionally to
-        how far the ratio has fallen.  The drop uses 75 % of each tier's gate
-        as hysteresis.
-
-        The result is stored in ``self._current_complexity_tier`` and returned.
+        Drops can span multiple percentage points when the ratio falls
+        below the 75 %-hysteresis retention threshold.
 
         Args:
-            population_average_fitness: (legacy, unused for gating — kept for
-                API compat and logging)
+            population_average_fitness: (legacy, unused for gating — kept
+                for API compat and logging)
             best_compression_ratio: Best agent's compression ratio as a
                 percentage (0-100).  0 means no data / first gen.
             gold_standard_win_rate: Fraction (0.0-1.0) of benchmark items
@@ -997,7 +1049,7 @@ class BenchmarkItemEvaluator:
                 gold-standard data is available yet (gate bypassed).
 
         Returns:
-            DataComplexity enum member.
+            DataComplexity enum member (derived from ``_complexity_pct``).
         """
         if not DataComplexity:
             return type('MockDataComplexity', (),
@@ -1007,95 +1059,76 @@ class BenchmarkItemEvaluator:
         # Increment the dwell counter each time this is called (= each refresh).
         self._refreshes_at_current_tier += 1
 
-        current = self._current_complexity_tier
-        current_val = getattr(current, 'value', 0)
-        original_name = getattr(current, 'name', 'UNKNOWN')
+        old_pct = self._complexity_pct
+        old_tier = self._current_complexity_tier
 
-        # --- TRY TO ADVANCE one tier ---
-        # Only consider the immediately next tier (no skipping).
-        # Must meet BOTH the ratio gate AND the minimum dwell time.
-        next_val = current_val + 1
-        max_val = getattr(DataComplexity.VERY_COMPLEX, 'value', 4)
-        if next_val <= max_val:
-            try:
-                next_tier = DataComplexity(next_val)
-            except ValueError:
-                next_tier = None
+        # --- TRY TO ADVANCE by 1 % ---
+        if self._complexity_pct < 100:
+            next_pct = self._complexity_pct + 1
+            ratio_gate = _ratio_gate_for_pct(next_pct)
+            gs_gate = _gs_gate_for_pct(next_pct)
+            dwell_ok = (self._refreshes_at_current_tier
+                        >= self._MIN_REFRESHES_BEFORE_ADVANCE)
+            gs_ok = (gs_gate <= 0
+                     or (gold_standard_win_rate >= 0
+                         and gold_standard_win_rate >= gs_gate))
+            ratio_ok = best_compression_ratio >= ratio_gate
 
-            if next_tier is not None:
-                ratio_gate = COMPLEXITY_RATIO_GATES.get(next_tier, 100.0)
-                gs_gate = COMPLEXITY_GOLD_STANDARD_GATES.get(next_tier, 0.0)
-                dwell_ok = self._refreshes_at_current_tier >= self._MIN_REFRESHES_BEFORE_ADVANCE
-                # Gold standard gate: if a gate > 0 exists, the AI must
-                # beat baselines on enough items.  When no gold standard
-                # data is available yet (win_rate < 0), BLOCK advancement
-                # instead of bypassing — the AI must prove itself first.
-                gs_ok = (gs_gate <= 0
-                         or (gold_standard_win_rate >= 0
-                             and gold_standard_win_rate >= gs_gate))
-                ratio_ok = best_compression_ratio >= ratio_gate
-                if ratio_ok and dwell_ok and gs_ok:
-                    self._current_complexity_tier = next_tier
-                    self._refreshes_at_current_tier = 0  # reset dwell counter
-                    gs_str = (f", gs_win_rate {gold_standard_win_rate:.0%} ≥ {gs_gate:.0%}"
-                              if gs_gate > 0 and gold_standard_win_rate >= 0 else "")
+            if ratio_ok and dwell_ok and gs_ok:
+                self._complexity_pct = next_pct
+                self._current_complexity_tier = _tier_from_pct(next_pct)
+                self._refreshes_at_current_tier = 0
+                new_tier = self._current_complexity_tier
+                tier_changed = (new_tier != old_tier)
+                gs_str = (f", gs_wr {gold_standard_win_rate:.0%} ≥ {gs_gate:.0%}"
+                          if gs_gate > 0 and gold_standard_win_rate >= 0
+                          else "")
+                self.logger.info(
+                    f"Complexity +1%: {old_pct}% → {self._complexity_pct}% "
+                    f"(ratio {best_compression_ratio:.1f}% ≥ {ratio_gate:.1f}%"
+                    f"{gs_str})"
+                    + (f" [tier: {old_tier.name} → {new_tier.name}]"
+                       if tier_changed else ""))
+                return self._current_complexity_tier
+            else:
+                reasons = []
+                if not ratio_ok:
+                    reasons.append(
+                        f"ratio {best_compression_ratio:.1f}% < {ratio_gate:.1f}%")
+                if not dwell_ok:
+                    reasons.append(
+                        f"dwell {self._refreshes_at_current_tier}/"
+                        f"{self._MIN_REFRESHES_BEFORE_ADVANCE}")
+                if not gs_ok:
+                    reasons.append(
+                        f"gs_wr {gold_standard_win_rate:.0%} < {gs_gate:.0%}")
+                if ratio_ok:  # only log when ratio met but something else blocks
                     self.logger.info(
-                        f"Complexity advanced: {current.name} → {next_tier.name} "
-                        f"(ratio {best_compression_ratio:.1f}% ≥ {ratio_gate:.0f}%, "
-                        f"dwell satisfied{gs_str})")
-                    return self._current_complexity_tier
-                else:
-                    # Log why advancement was deferred
-                    reasons = []
-                    if not ratio_ok:
-                        reasons.append(f"ratio {best_compression_ratio:.1f}% < {ratio_gate:.0f}%")
-                    if not dwell_ok:
-                        reasons.append(f"dwell {self._refreshes_at_current_tier}/{self._MIN_REFRESHES_BEFORE_ADVANCE}")
-                    if not gs_ok:
-                        reasons.append(f"gs_win_rate {gold_standard_win_rate:.0%} < {gs_gate:.0%}")
-                    if ratio_ok:  # only log when ratio is met but something else blocks
-                        self.logger.info(
-                            f"Complexity advancement deferred: {current.name} → {next_tier.name} "
-                            f"({', '.join(reasons)})")
+                        f"Complexity advancement deferred at {self._complexity_pct}%: "
+                        f"{', '.join(reasons)}")
 
-        # --- MULTI-STEP DROP ---
-        # Keep dropping tiers as long as the compression ratio is below the
-        # retention threshold for the current tier.  The retention threshold
-        # is 75 % of the tier's advancement gate.
-        #
-        # This means difficulty always stays proportional to real performance:
-        #   COMPLEX requires 60 % to advance → drops if ratio < 45 %
-        #   MODERATE requires 45 % to advance → drops if ratio < 33.75 %
-        #   SIMPLE requires 25 % to advance → drops if ratio < 18.75 %
-        #
-        # We skip the drop when best_compression_ratio == 0 (first gen or no
-        # data) to avoid false drops on empty results.
-        _DROP_HYSTERESIS = 0.75  # 75 % of advancement gate
-        if best_compression_ratio > 0 and current_val > 0:
-            target_val = current_val
-            while target_val > 0:
-                try:
-                    tier_at = DataComplexity(target_val)
-                except ValueError:
-                    break
-                gate = COMPLEXITY_RATIO_GATES.get(tier_at, 0.0)
+        # --- MULTI-STEP DROP (in pct points) ---
+        # Drop pct while the ratio is below the retention threshold
+        # (75 % of the gate for the current pct).
+        _DROP_HYSTERESIS = 0.75
+        if best_compression_ratio > 0 and self._complexity_pct > 0:
+            target_pct = self._complexity_pct
+            while target_pct > 0:
+                gate = _ratio_gate_for_pct(target_pct)
                 drop_threshold = gate * _DROP_HYSTERESIS
                 if best_compression_ratio < drop_threshold:
-                    target_val -= 1
+                    target_pct -= 1
                 else:
-                    break  # ratio is high enough to stay at this tier
+                    break
 
-            if target_val < current_val:
-                try:
-                    new_tier = DataComplexity(target_val)
-                except ValueError:
-                    new_tier = DataComplexity.VERY_SIMPLE
-                self._current_complexity_tier = new_tier
-                self._refreshes_at_current_tier = 0  # reset dwell counter on drop too
+            if target_pct < self._complexity_pct:
+                dropped_from = self._complexity_pct
+                self._complexity_pct = target_pct
+                self._current_complexity_tier = _tier_from_pct(target_pct)
+                self._refreshes_at_current_tier = 0
                 self.logger.info(
-                    f"Complexity dropped: {original_name} → {new_tier.name} "
-                    f"(ratio {best_compression_ratio:.1f}% — multi-step, "
-                    f"75 % hysteresis)")
+                    f"Complexity dropped: {dropped_from}% → {self._complexity_pct}% "
+                    f"(ratio {best_compression_ratio:.1f}%, 75% hysteresis)")
                 return self._current_complexity_tier
 
         # --- NO CHANGE ---

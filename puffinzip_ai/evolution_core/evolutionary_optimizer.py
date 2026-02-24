@@ -465,10 +465,8 @@ class EvolutionaryOptimizer:
                         tier_enum = getattr(be, '_current_complexity_tier', None)
                         if tier_enum is not None:
                             complexity_tier = getattr(tier_enum, 'name', 'UNKNOWN')
-                            # Map enum value (0-4) to 1-100 scale for display
-                            raw_val = getattr(tier_enum, 'value', 0)
-                            _COMPLEXITY_SCALE = {0: 1, 1: 25, 2: 50, 3: 75, 4: 100}
-                            complexity_value = _COMPLEXITY_SCALE.get(raw_val, raw_val)
+                            # Use continuous _complexity_pct (0-100) directly
+                            complexity_value = getattr(be, '_complexity_pct', 0)
                         # Determine active generation size tier (with ratio gating)
                         last_ratio = getattr(self, '_last_best_compression_ratio', 0.0)
                         size_dwell = getattr(be, '_previous_size_tier_refreshes', 0)
@@ -1420,6 +1418,7 @@ class EvolutionaryOptimizer:
         if self.benchmark_evaluator:
             live_items = list(self.benchmark_evaluator.benchmark_items or [])
             live_complexity = self.benchmark_evaluator._current_complexity_tier
+            live_complexity_pct = getattr(self.benchmark_evaluator, '_complexity_pct', 0)
             live_tier_idx = self.benchmark_evaluator._previous_tier_index
             live_complexity_dwell = getattr(self.benchmark_evaluator, '_refreshes_at_current_tier', 0)
             live_size_dwell = getattr(self.benchmark_evaluator, '_previous_size_tier_refreshes', 0)
@@ -1437,6 +1436,7 @@ class EvolutionaryOptimizer:
                 # live evaluator so the prefetch generates data at the
                 # correct difficulty and applies the growth rate limiter.
                 tmp_evaluator._current_complexity_tier = live_complexity
+                tmp_evaluator._complexity_pct = live_complexity_pct
                 tmp_evaluator._previous_tier_index = live_tier_idx
                 # Inherit dwell counters so advancement rate-limiting works.
                 tmp_evaluator._refreshes_at_current_tier = live_complexity_dwell
@@ -1453,6 +1453,7 @@ class EvolutionaryOptimizer:
                 return {
                     'items': list(tmp_evaluator.benchmark_items),
                     'complexity_tier': tmp_evaluator._current_complexity_tier,
+                    'complexity_pct': tmp_evaluator._complexity_pct,
                     'tier_index': tmp_evaluator._previous_tier_index,
                     'complexity_dwell': tmp_evaluator._refreshes_at_current_tier,
                     'size_dwell': tmp_evaluator._previous_size_tier_refreshes,
@@ -1566,6 +1567,8 @@ class EvolutionaryOptimizer:
                     # lags behind and the next sync refresh double-advances.
                     if 'complexity_tier' in prefetch_result and prefetch_result['complexity_tier'] is not None:
                         self.benchmark_evaluator._current_complexity_tier = prefetch_result['complexity_tier']
+                    if 'complexity_pct' in prefetch_result:
+                        self.benchmark_evaluator._complexity_pct = prefetch_result['complexity_pct']
                     if 'tier_index' in prefetch_result:
                         self.benchmark_evaluator._previous_tier_index = prefetch_result['tier_index']
                     # Sync dwell counters so rate-limiting survives the swap.

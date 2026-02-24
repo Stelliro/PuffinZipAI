@@ -3,6 +3,12 @@ REM ============================================================================
 REM PuffinZipAI Web UI Launcher - Windows
 REM   Usage:  run_webui_windows.bat             (normal mode)
 REM           run_webui_windows.bat --debug      (debug/verbose mode)
+REM
+REM   Environment variables (all optional):
+REM     PUFFIN_HOST         Bind address          (default: 0.0.0.0)
+REM     PUFFIN_PORT         WebUI port            (default: 5001)
+REM     PUFFIN_USERNAME     WebUI login username  (prompted if not set)
+REM     PUFFIN_PASSWORD     WebUI login password  (prompted if not set)
 REM ============================================================================
 
 setlocal enabledelayedexpansion
@@ -29,9 +35,34 @@ if exist ".venv\Scripts\python.exe" (
 )
 echo Using Python: %PYTHON_EXE%
 
-REM --- Kill any previous PuffinZipAI Web UI server on port 5001 ---
+REM --- Host / Port config ---
+if not defined PUFFIN_HOST set "PUFFIN_HOST=0.0.0.0"
+if not defined PUFFIN_PORT set "PUFFIN_PORT=5001"
+
+REM --- Authentication credentials ---
+if not defined PUFFIN_USERNAME (
+    echo.
+    set /p PUFFIN_USERNAME="Enter WebUI username: "
+)
+if not defined PUFFIN_PASSWORD (
+    echo.
+    REM Note: input is visible on Windows CMD — set PUFFIN_PASSWORD env var beforehand for silent mode
+    set /p PUFFIN_PASSWORD="Enter WebUI password: "
+)
+if "!PUFFIN_USERNAME!"=="" (
+    echo ERROR: Username cannot be empty.
+    pause
+    exit /b 1
+)
+if "!PUFFIN_PASSWORD!"=="" (
+    echo ERROR: Password cannot be empty.
+    pause
+    exit /b 1
+)
+
+REM --- Kill any previous PuffinZipAI Web UI server on the configured port ---
 echo Checking for previous server instances...
-for /f %%p in ('powershell -NoProfile -Command "$conn = Get-NetTCPConnection -LocalPort 5001 -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1; if ($conn) { $conn.OwningProcess }"') do (
+for /f %%p in ('powershell -NoProfile -Command "$conn = Get-NetTCPConnection -LocalPort !PUFFIN_PORT! -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1; if ($conn) { $conn.OwningProcess }"') do (
     echo Stopping previous server ^(PID: %%p^)...
     taskkill /pid %%p /f >nul 2>&1
     timeout /t 1 /nobreak >nul
@@ -67,6 +98,8 @@ if defined DEBUG_FLAG (
 echo.
 echo ======================================================
 echo   PuffinZipAI Web UI - Starting Server
+echo   Binding to !PUFFIN_HOST!:!PUFFIN_PORT!
+echo   Authentication: ENABLED (user: !PUFFIN_USERNAME!)
 echo   Waiting for server readiness before opening browser
 echo   Press any key later to stop the server
 echo ======================================================
@@ -74,7 +107,7 @@ echo.
 
 set "SERVER_LOG=%TEMP%\puffinzip_webui_server_%RANDOM%_%RANDOM%.log"
 
-start "" /b %PYTHON_EXE% webui_server.py --host 127.0.0.1 --port 5001 %DEBUG_FLAG% > "%SERVER_LOG%" 2>&1
+start "" /b %PYTHON_EXE% webui_server.py --host !PUFFIN_HOST! --port !PUFFIN_PORT! %DEBUG_FLAG% > "%SERVER_LOG%" 2>&1
 
 set "SPINNER=|/-\"
 set /a "SPIN_INDEX=0"
@@ -82,7 +115,7 @@ set /a "WAIT_SECONDS=0"
 set /a "MAX_WAIT_SECONDS=90"
 
 :WAIT_FOR_SERVER
-powershell -NoProfile -Command "try { Invoke-WebRequest -UseBasicParsing -Uri 'http://127.0.0.1:5001/api/status' -TimeoutSec 1 | Out-Null; exit 0 } catch { exit 1 }"
+powershell -NoProfile -Command "try { Invoke-WebRequest -UseBasicParsing -Uri 'http://127.0.0.1:!PUFFIN_PORT!/health' -TimeoutSec 1 | Out-Null; exit 0 } catch { exit 1 }"
 if !errorlevel! equ 0 goto SERVER_READY
 
 set /a "SPIN_INDEX=(SPIN_INDEX+1) %% 4"
@@ -98,11 +131,11 @@ goto WAIT_FOR_SERVER
 
 :SERVER_READY
 echo.
-echo Server is ready. Opening browser at http://localhost:5001 ...
-start http://localhost:5001
+echo Server is ready. Opening browser at http://localhost:!PUFFIN_PORT! ...
+start http://localhost:!PUFFIN_PORT!
 
 set "SERVER_PID="
-for /f %%p in ('powershell -NoProfile -Command "$conn = Get-NetTCPConnection -LocalPort 5001 -State Listen -ErrorAction SilentlyContinue ^| Select-Object -First 1; if ($conn) { $conn.OwningProcess }"') do set "SERVER_PID=%%p"
+for /f %%p in ('powershell -NoProfile -Command "$conn = Get-NetTCPConnection -LocalPort !PUFFIN_PORT! -State Listen -ErrorAction SilentlyContinue ^| Select-Object -First 1; if ($conn) { $conn.OwningProcess }"') do set "SERVER_PID=%%p"
 
 echo.
 if not defined SERVER_PID goto SERVER_READY_NO_PID
@@ -121,7 +154,7 @@ exit /b 0
 :SERVER_TIMEOUT
 echo.
 echo ERROR: Web UI did not become ready within !MAX_WAIT_SECONDS! seconds.
-for /f %%p in ('powershell -NoProfile -Command "$conn = Get-NetTCPConnection -LocalPort 5001 -State Listen -ErrorAction SilentlyContinue ^| Select-Object -First 1; if ($conn) { $conn.OwningProcess }"') do set "SERVER_PID=%%p"
+for /f %%p in ('powershell -NoProfile -Command "$conn = Get-NetTCPConnection -LocalPort !PUFFIN_PORT! -State Listen -ErrorAction SilentlyContinue ^| Select-Object -First 1; if ($conn) { $conn.OwningProcess }"') do set "SERVER_PID=%%p"
 if defined SERVER_PID taskkill /pid !SERVER_PID! /f >nul 2>&1
 if exist "%SERVER_LOG%" (
     echo ----- Last server log lines -----

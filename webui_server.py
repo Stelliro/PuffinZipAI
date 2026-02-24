@@ -1,4 +1,4 @@
-from flask import Flask, render_template, jsonify, request
+from flask import Flask, render_template, jsonify, request, session, redirect, url_for
 from flask_cors import CORS
 import threading
 import queue
@@ -12,6 +12,9 @@ import glob
 import logging
 import gc
 import math
+import secrets
+import hashlib
+from functools import wraps
 from typing import Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -78,7 +81,68 @@ except Exception as e:
     get_hybrid_engine = None
 
 app = Flask(__name__, static_folder='webui_static', template_folder='webui_templates')
+app.secret_key = os.environ.get('PUFFIN_SECRET_KEY', secrets.token_hex(32))
 CORS(app)
+
+# --- AUTHENTICATION ---
+_AUTH_USERNAME = os.environ.get('PUFFIN_USERNAME', '')
+_AUTH_PASSWORD = os.environ.get('PUFFIN_PASSWORD', '')
+_AUTH_ENABLED = bool(_AUTH_USERNAME and _AUTH_PASSWORD)
+
+# Pre-hash the password so we never compare in plain text after startup
+_AUTH_PASSWORD_HASH = hashlib.sha256(_AUTH_PASSWORD.encode()).hexdigest() if _AUTH_PASSWORD else ''
+
+# Routes that do NOT require authentication (health check for scripts)
+_PUBLIC_ROUTES = frozenset(['login', 'logout', 'health', 'static'])
+
+
+def _check_password(candidate: str) -> bool:
+    """Constant-time password comparison via SHA-256."""
+    return secrets.compare_digest(
+        hashlib.sha256(candidate.encode()).hexdigest(),
+        _AUTH_PASSWORD_HASH,
+    )
+
+
+@app.before_request
+def _require_login():
+    """Redirect unauthenticated users to the login page."""
+    if not _AUTH_ENABLED:
+        return  # Auth disabled — allow everything
+    if request.endpoint in _PUBLIC_ROUTES:
+        return  # Public route
+    if session.get('authenticated'):
+        return  # Already logged in
+    # For API routes return 401 so JS callers can detect auth failure
+    if request.path.startswith('/api/'):
+        return jsonify({'error': 'Authentication required'}), 401
+    return redirect(url_for('login'))
+
+
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    error = None
+    if request.method == 'POST':
+        username = request.form.get('username', '')
+        password = request.form.get('password', '')
+        if username == _AUTH_USERNAME and _check_password(password):
+            session['authenticated'] = True
+            session.permanent = True
+            return redirect(url_for('index'))
+        error = 'Invalid username or password.'
+    return render_template('login.html', version=APP_VERSION, error=error)
+
+
+@app.route('/logout')
+def logout():
+    session.clear()
+    return redirect(url_for('login'))
+
+
+@app.route('/health')
+def health():
+    """Unauthenticated health-check endpoint for launcher scripts."""
+    return jsonify({'status': 'ok'})
 
 # --- WebUI metrics cache file (persists across restarts) ---
 _WEBUI_CACHE_PATH = os.path.join(BASE_DIR, "webui_metrics_cache.json")

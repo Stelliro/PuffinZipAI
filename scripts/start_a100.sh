@@ -18,6 +18,8 @@
 #    PUFFIN_GPUS          Comma-separated GPU IDs  (default: all available)
 #    PUFFIN_CACHE_MAX_MB  GitHub cache limit in MB (default: 200)
 #    PUFFIN_CACHE_MAX_FILES  Max cached files      (default: 500)
+#    PUFFIN_USERNAME      WebUI login username     (prompted if not set)
+#    PUFFIN_PASSWORD      WebUI login password     (prompted if not set)
 #    GITHUB_TOKEN         GitHub API token         (optional, higher rate limits)
 #    PUFFIN_REPO_URL      Override repo clone URL
 #    PUFFIN_REPO_BRANCH   Branch to checkout       (default: main)
@@ -33,6 +35,27 @@ HOST="${PUFFIN_HOST:-0.0.0.0}"
 WORKERS="${PUFFIN_WORKERS:-0}"
 CACHE_MAX_MB="${PUFFIN_CACHE_MAX_MB:-200}"
 CACHE_MAX_FILES="${PUFFIN_CACHE_MAX_FILES:-500}"
+
+# ── Authentication ───────────────────────────────────────────────────────────
+# Prompt for credentials if not supplied via environment
+if [[ -z "${PUFFIN_USERNAME:-}" ]]; then
+    read -rp "$(echo -e "${CYAN}[?]${NC} Enter WebUI username: ")" PUFFIN_USERNAME
+    if [[ -z "$PUFFIN_USERNAME" ]]; then
+        err "Username cannot be empty."
+        exit 1
+    fi
+fi
+
+if [[ -z "${PUFFIN_PASSWORD:-}" ]]; then
+    read -rsp "$(echo -e "${CYAN}[?]${NC} Enter WebUI password: ")" PUFFIN_PASSWORD
+    echo  # newline after silent input
+    if [[ -z "$PUFFIN_PASSWORD" ]]; then
+        err "Password cannot be empty."
+        exit 1
+    fi
+fi
+
+export PUFFIN_USERNAME PUFFIN_PASSWORD
 
 # ── Colours ──────────────────────────────────────────────────────────────────
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
@@ -267,6 +290,7 @@ else
 echo -e "  ${CYAN}GPUs:${NC}     ${BOLD}None (CPU-only mode)${NC}"
 fi
 echo -e "  ${CYAN}Cache:${NC}    ${BOLD}${CACHE_MAX_MB} MB / ${CACHE_MAX_FILES} files max (LRU eviction)${NC}"
+echo -e "  ${CYAN}Auth:${NC}     ${BOLD}Enabled (user: $PUFFIN_USERNAME)${NC}"
 echo -e "  ${CYAN}Console:${NC}  Live logs below — Ctrl+C to stop"
 echo -e "${BOLD}════════════════════════════════════════════════════════════${NC}"
 echo ""

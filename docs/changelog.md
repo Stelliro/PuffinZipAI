@@ -39,7 +39,13 @@ This document tracks the evolution of PuffinZipAI, including new features, signi
 
 **Dev Cycle 0.9.x (Current Focus: GPU Foundations, Advanced ELS Dynamics, UI Stability)**
 
-*   **Build 0.9.8 — Continue Training & Run History (2026-02-24)**
+*   **Build 0.9.8 — Continue Training, Run History & Continuous Complexity (2026-02-24)**
+    *   _Changed:_ **Continuous 1%-at-a-time complexity scaling** — complexity now advances by 1 percentage point per qualifying benchmark refresh instead of jumping between 5 discrete tiers (25% leaps). `_complexity_pct` (0-100) is the primary complexity knob; the `DataComplexity` enum tier is derived from it for backward compatibility.
+        *   Piecewise-linear interpolation gates for ratio (`_RATIO_GATE_KNOTS`) and gold-standard win rate (`_GS_GATE_KNOTS`) replace hard-coded per-tier thresholds.
+        *   Data generation parameters (`run_likelihood`, `unique_focus`, `max_run_cap`) interpolate smoothly via `_interpolate_generation_params(pct)` — no hard jumps between tiers.
+        *   Multi-step drops: complexity can drop multiple pct points in one refresh when ratio falls below 75% hysteresis of the interpolated gate.
+        *   `complexity_value` in metrics JSON is now 0-100 continuous (was {1, 25, 50, 75, 100} discrete).
+        *   Minimum dwell = 1 refresh per 1% step (down from 2 per tier).
     *   _Added:_ **Continue Training** — new green "Continue" button in the WebUI navbar lets users extend evolution after a run completes (or is manually stopped) without losing the population.
         *   `EvolutionaryOptimizer.continue_evolution()` resumes the evolution loop from the last elapsed generation, preserving the entire population and fitness state.
         *   `start_evolution()` now accepts `_continue=True` to skip population recreation and start `gen` from `total_generations_elapsed`.
