@@ -246,6 +246,14 @@ REM Check admin credentials status
 set "ADMIN_ENABLED=0"
 for /f "usebackq delims=" %%a in (`%PYTHON_EXE% -c "from webui_credentials_manager import load_or_create_credentials; c = load_or_create_credentials(); print('1' if c.get('admin_username','').strip() and c.get('admin_password','').strip() else '0')" 2^>nul`) do set "ADMIN_ENABLED=%%a"
 
+REM Read URL prefix from custom_url (e.g. /puffinzipai)
+set "URL_PREFIX="
+if defined CUSTOM_URL (
+    for /f "usebackq delims=" %%x in (`%PYTHON_EXE% -c "from urllib.parse import urlparse; u='!CUSTOM_URL!'; u=u if '://' in u else 'https://'+u; print(urlparse(u).path.rstrip('/'))" 2^>nul`) do (
+        if not "%%x"=="" set "URL_PREFIX=%%x"
+    )
+)
+
 if defined RUNPOD_POD_ID (
     set "PLATFORM=RunPod"
     set "CONNECT_URL=https://!RUNPOD_POD_ID!-!PUFFIN_PORT!.proxy.runpod.net"
@@ -311,7 +319,7 @@ set /a "WAIT_SECONDS=0"
 set /a "MAX_WAIT_SECONDS=90"
 
 :WAIT_FOR_SERVER
-powershell -NoProfile -Command "try { Invoke-WebRequest -UseBasicParsing -Uri 'http://127.0.0.1:!PUFFIN_PORT!/health' -TimeoutSec 1 | Out-Null; exit 0 } catch { exit 1 }"
+powershell -NoProfile -Command "try { Invoke-WebRequest -UseBasicParsing -Uri 'http://127.0.0.1:!PUFFIN_PORT!!URL_PREFIX!/health' -TimeoutSec 1 | Out-Null; exit 0 } catch { exit 1 }"
 if !errorlevel! equ 0 goto SERVER_READY
 
 set /a "WAIT_SECONDS+=1"
@@ -323,7 +331,7 @@ goto WAIT_FOR_SERVER
 :SERVER_READY
 echo.
 echo [OK] Server is ready! Opening browser...
-start http://localhost:!PUFFIN_PORT!
+start http://localhost:!PUFFIN_PORT!!URL_PREFIX!
 
 set "SERVER_PID="
 for /f %%p in ('powershell -NoProfile -Command "$conn = Get-NetTCPConnection -LocalPort !PUFFIN_PORT! -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1; if ($conn) { $conn.OwningProcess }"') do set "SERVER_PID=%%p"

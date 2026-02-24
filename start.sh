@@ -418,6 +418,15 @@ if [[ -z "$CUSTOM_URL" && -f "$SCRIPT_DIR/webui_credentials.json" ]]; then
     CUSTOM_URL=$(python3 -c "import json; d=json.load(open('$SCRIPT_DIR/webui_credentials.json')); print(d.get('custom_url',''))" 2>/dev/null || echo "")
 fi
 
+# Extract URL prefix from custom_url (e.g. /puffinzipai)
+URL_PREFIX=""
+if [[ -n "$CUSTOM_URL" ]]; then
+    URL_PREFIX=$(python3 -c "from urllib.parse import urlparse; u='$CUSTOM_URL'; u=u if '://' in u else 'https://'+u; print(urlparse(u).path.rstrip('/'))" 2>/dev/null || echo "")
+    if [[ -n "$URL_PREFIX" ]]; then
+        info "URL prefix: ${BOLD}$URL_PREFIX${NC}"
+    fi
+fi
+
 if [[ -n "${RUNPOD_POD_ID:-}" ]]; then
     # RunPod: pods are behind NAT — use the RunPod reverse-proxy URL
     PLATFORM="RunPod"

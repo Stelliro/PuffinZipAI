@@ -220,8 +220,16 @@ _ADMIN_USERNAME = _credentials.get('admin_username', '').strip()
 _ADMIN_PASSWORD = _credentials.get('admin_password', '').strip()
 _ADMIN_AUTH_ENABLED = bool(_ADMIN_USERNAME and _ADMIN_PASSWORD)
 
-# Custom URL for remote access (informational — shown in banner)
+# Custom URL for remote access — extract URL prefix for subpath hosting
 _CUSTOM_URL = _credentials.get('custom_url', '').strip()
+_URL_PREFIX = ''
+if _CUSTOM_URL:
+    from urllib.parse import urlparse as _urlparse
+    _url_normalized = _CUSTOM_URL if '://' in _CUSTOM_URL else f'https://{_CUSTOM_URL}'
+    _parsed = _urlparse(_url_normalized)
+    _URL_PREFIX = _parsed.path.rstrip('/')  # e.g. '/puffinzipai'
+    if _URL_PREFIX:
+        print(f"[PREFIX] URL prefix: {_URL_PREFIX}")
 
 # Session hardening
 app.config.update(
@@ -238,6 +246,42 @@ _AUTH_PASSWORD_HASH = hashlib.sha256(_AUTH_PASSWORD.encode()).hexdigest() if _AU
 # Pre-hash admin credentials (empty hash if admin auth is disabled)
 _ADMIN_USERNAME_HASH = hashlib.sha256(_ADMIN_USERNAME.encode()).hexdigest() if _ADMIN_AUTH_ENABLED else ''
 _ADMIN_PASSWORD_HASH = hashlib.sha256(_ADMIN_PASSWORD.encode()).hexdigest() if _ADMIN_AUTH_ENABLED else ''
+
+# ── URL prefix middleware (subpath hosting, e.g. /puffinzipai) ───────────────
+if _URL_PREFIX:
+    from werkzeug.middleware.proxy_fix import ProxyFix
+
+    class _PrefixMiddleware:
+        """WSGI middleware that strips a URL prefix from PATH_INFO.
+
+        When the app is served at a subpath (e.g. ``/puffinzipai``), this
+        middleware strips the prefix before Flask sees the request and sets
+        ``SCRIPT_NAME`` so that ``url_for()`` generates correct prefixed URLs.
+        Requests that do NOT start with the prefix get a 404.
+        """
+        def __init__(self, wsgi_app, prefix: str):
+            self.app = wsgi_app
+            self.prefix = prefix
+
+        def __call__(self, environ, start_response):
+            path = environ.get('PATH_INFO', '')
+            if path == self.prefix or path.startswith(self.prefix + '/'):
+                environ['PATH_INFO'] = path[len(self.prefix):] or '/'
+                environ['SCRIPT_NAME'] = self.prefix
+                return self.app(environ, start_response)
+            # Not under our prefix — 404
+            start_response('404 NOT FOUND', [('Content-Type', 'text/plain')])
+            return [b'Not Found']
+
+    # Stack: ProxyFix (reads X-Forwarded-*) → PrefixMiddleware → Flask
+    app.wsgi_app = _PrefixMiddleware(ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1), _URL_PREFIX)
+else:
+    # No prefix — still add ProxyFix for cloud deployments behind load balancers
+    try:
+        from werkzeug.middleware.proxy_fix import ProxyFix
+        app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
+    except ImportError:
+        pass
 
 # Routes that do NOT require authentication (health check for scripts)
 _PUBLIC_ROUTES = frozenset(['login', 'logout', 'health', 'static'])
@@ -498,7 +542,7 @@ app_state.load_cache()
 
 @app.route('/')
 def index(): 
-    return render_template('index.html', version=APP_VERSION)
+    return render_template('index.html', version=APP_VERSION, url_prefix=_URL_PREFIX)
 
 @app.route('/api/status')
 def status():

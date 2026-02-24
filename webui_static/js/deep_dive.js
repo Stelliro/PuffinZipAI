@@ -282,7 +282,7 @@ class DeepDiveManager {
        ------------------------------------------------------------------ */
     async pollDeepDive() {
         try {
-            const res = await fetch(`/api/evolution/deep-dive?page=${this.ddPage}&per_page=20`);
+            const res = await fetch(`${_P}/api/evolution/deep-dive?page=${this.ddPage}&per_page=20`);
             const d = await res.json();
 
             this.ddTotalPages = d.total_pages || 1;

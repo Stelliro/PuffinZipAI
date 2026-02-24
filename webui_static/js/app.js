@@ -2,6 +2,9 @@
    PuffinZipAI Web UI — Main Application
    ============================================================================ */
 
+/** URL prefix for subpath hosting (e.g. '/puffinzipai'). Injected by the server. */
+const _P = window.PUFFIN_PREFIX || '';
+
 class PuffinZipAIApp {
     constructor() {
         this.isTraining = false;
@@ -26,7 +29,7 @@ class PuffinZipAIApp {
     /** Fetch system limits and pre-fill form defaults */
     async loadSystemDefaults() {
         try {
-            const res = await fetch('/api/status');
+            const res = await fetch(_P + '/api/status');
             const d = await res.json();
             const lim = d.system_limits || {};
             const wEl = document.getElementById('cpu-workers');
@@ -39,7 +42,7 @@ class PuffinZipAIApp {
     /** Fetch hardware profile + run presets and wire up preset buttons */
     async loadHardwareProfile() {
         try {
-            const res = await fetch('/api/hardware-profile');
+            const res = await fetch(_P + '/api/hardware-profile');
             const d = await res.json();
             this._presets = d.presets || {};
             const hw = d.hardware || {};
@@ -278,7 +281,7 @@ class PuffinZipAIApp {
         const workers = document.getElementById('cpu-workers')?.value || 4;
 
         try {
-            await fetch('/api/training/start', {
+            await fetch(_P + '/api/training/start', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -302,7 +305,7 @@ class PuffinZipAIApp {
 
     async stopTraining() {
         try {
-            await fetch('/api/training/stop', { method: 'POST' });
+            await fetch(_P + '/api/training/stop', { method: 'POST' });
             this.isTraining = false;
             this.updateUIState();
         } catch (e) { console.error(e); }
@@ -316,7 +319,7 @@ class PuffinZipAIApp {
         const infinite = document.getElementById('infinite-generations')?.checked || false;
 
         try {
-            const res = await fetch('/api/training/continue', {
+            const res = await fetch(_P + '/api/training/continue', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -381,7 +384,7 @@ class PuffinZipAIApp {
 
     async pollStatus() {
         try {
-            const res = await fetch('/api/status');
+            const res = await fetch(_P + '/api/status');
             const d = await res.json();
             const changed = this.isTraining !== d.is_training || this.canContinue !== !!d.can_continue;
             this.isTraining = d.is_training;
@@ -403,7 +406,7 @@ class PuffinZipAIApp {
 
     async pollMetrics() {
         try {
-            const res = await fetch('/api/metrics');
+            const res = await fetch(_P + '/api/metrics');
             const d = await res.json();
 
             /* --- KPI updates --- */
@@ -527,7 +530,7 @@ class PuffinZipAIApp {
 
     async pollPopulation() {
         try {
-            const res = await fetch(`/api/population/history?page=${this.popPage}&per_page=20`);
+            const res = await fetch(`${_P}/api/population/history?page=${this.popPage}&per_page=20`);
             const d = await res.json();
             const container = document.getElementById('population-history-container');
             if (!container) return;
@@ -650,7 +653,7 @@ class PuffinZipAIApp {
 
     async pollLogs() {
         try {
-            const res = await fetch('/api/logs');
+            const res = await fetch(_P + '/api/logs');
             const logs = await res.json();
             const container = document.getElementById('log-container');
             if (!container || logs.length === 0) return;
@@ -687,7 +690,7 @@ class PuffinZipAIApp {
         const btn = document.getElementById('btn-save-checkpoint');
         if (btn) btn.disabled = true;
         try {
-            const res = await fetch('/api/checkpoint/save', {
+            const res = await fetch(_P + '/api/checkpoint/save', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ name })
@@ -710,7 +713,7 @@ class PuffinZipAIApp {
         modal.style.display = 'flex';
         list.innerHTML = '<p>Loading...</p>';
         try {
-            const res = await fetch('/api/checkpoint/list');
+            const res = await fetch(_P + '/api/checkpoint/list');
             const data = await res.json();
             if (data.checkpoints && data.checkpoints.length > 0) {
                 list.innerHTML = data.checkpoints.map(cp => {
@@ -740,7 +743,7 @@ class PuffinZipAIApp {
     async _deleteCheckpoint(key) {
         if (!confirm(`Delete checkpoint "${key}"?`)) return;
         try {
-            const res = await fetch('/api/checkpoint/delete', {
+            const res = await fetch(_P + '/api/checkpoint/delete', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ key })
@@ -759,7 +762,7 @@ class PuffinZipAIApp {
        ------------------------------------------------------------------ */
     async loadCompressionMethods() {
         try {
-            const res = await fetch('/api/compression-methods');
+            const res = await fetch(_P + '/api/compression-methods');
             const methods = await res.json();
             const grid = document.getElementById('methods-grid');
             if (grid && methods.length) {
@@ -808,7 +811,7 @@ async function loadValidationCheckpoints() {
     const sel = document.getElementById('validation-checkpoint-select');
     if (!sel) return;
     try {
-        const res = await fetch('/api/checkpoint/list');
+        const res = await fetch(_P + '/api/checkpoint/list');
         const data = await res.json();
         if (data.checkpoints && data.checkpoints.length > 0) {
             sel.innerHTML = data.checkpoints.map(cp =>
@@ -834,7 +837,7 @@ async function testCheckpoint() {
     formData.append('checkpoint', sel.value);
     formData.append('file', fileInput.files[0]);
     try {
-        const res = await fetch('/api/checkpoint/test', { method: 'POST', body: formData });
+        const res = await fetch(_P + '/api/checkpoint/test', { method: 'POST', body: formData });
         const data = await res.json();
         if (data.error) {
             results.innerHTML = `<div class="placeholder-center" style="color:var(--danger-color);">${data.error}</div>`;
