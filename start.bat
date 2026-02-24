@@ -194,11 +194,26 @@ for /d /r "." %%d in (__pycache__) do (
     if exist "%%d" rd /s /q "%%d" >nul 2>&1
 )
 
+REM ── Detect public IP (best-effort) ────────────────────────────────────────
+set "PUBLIC_IP="
+if "!PUFFIN_HOST!"=="0.0.0.0" (
+    for /f "usebackq delims=" %%i in (`powershell -NoProfile -Command "try { (Invoke-WebRequest -UseBasicParsing -Uri 'https://api.ipify.org' -TimeoutSec 3).Content.Trim() } catch { try { (Invoke-WebRequest -UseBasicParsing -Uri 'https://ifconfig.me' -TimeoutSec 3).Content.Trim() } catch { '' } }"`) do set "PUBLIC_IP=%%i"
+)
+
 REM ── Start server ──────────────────────────────────────────────────────────
 echo.
 echo ========================================================
 echo   Starting PuffinZipAI WebUI
-echo   URL:      http://!PUFFIN_HOST!:!PUFFIN_PORT!
+if defined PUBLIC_IP (
+    if not "!PUBLIC_IP!"=="" (
+        echo   Connect:  http://!PUBLIC_IP!:!PUFFIN_PORT!
+        echo   Bind:     !PUFFIN_HOST!:!PUFFIN_PORT!
+    ) else (
+        echo   URL:      http://!PUFFIN_HOST!:!PUFFIN_PORT!
+    )
+) else (
+    echo   URL:      http://!PUFFIN_HOST!:!PUFFIN_PORT!
+)
 echo   Workers:  !PUFFIN_WORKERS! CPU workers
 if !GPU_COUNT! gtr 0 (
     set /a "GPU_VRAM_GB=GPU_VRAM_MB / 1024"

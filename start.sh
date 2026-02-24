@@ -10,7 +10,7 @@
 #
 #  Environment variables (all optional):
 #    PUFFIN_PORT            WebUI port              (default: 5001)
-#    PUFFIN_HOST            Bind address             (default: 0.0.0.0)
+#    PUFFIN_HOST            Bind address             (default: from credentials)
 #    PUFFIN_WORKERS         CPU worker count         (default: auto)
 #    PUFFIN_GPUS            Comma-separated GPU IDs  (default: all available)
 #    PUFFIN_CACHE_MAX_MB    GitHub cache limit in MB (default: 200)
@@ -278,11 +278,26 @@ if [[ -z "$HOST" ]]; then
     fi
 fi
 
-# ── 7. Start server ─────────────────────────────────────────────────────────
+# ── 7. Detect public IP (best-effort, non-blocking) ────────────────────────
+PUBLIC_IP=""
+if [[ "$HOST" == "0.0.0.0" ]]; then
+    PUBLIC_IP=$(curl -s --max-time 3 https://api.ipify.org 2>/dev/null \
+             || curl -s --max-time 3 https://ifconfig.me 2>/dev/null \
+             || curl -s --max-time 3 https://icanhazip.com 2>/dev/null \
+             || echo "")
+    PUBLIC_IP=$(echo "$PUBLIC_IP" | tr -d '[:space:]')  # trim whitespace
+fi
+
+# ── 8. Start server ─────────────────────────────────────────────────────────
 echo ""
 echo -e "${BOLD}════════════════════════════════════════════════════════════${NC}"
 echo -e "${BOLD}  Starting PuffinZipAI WebUI${NC}"
+if [[ -n "$PUBLIC_IP" ]]; then
+echo -e "  ${CYAN}Connect:${NC}  ${BOLD}http://$PUBLIC_IP:$PORT${NC}"
+echo -e "  ${CYAN}Bind:${NC}     ${BOLD}$HOST:$PORT${NC}"
+else
 echo -e "  ${CYAN}URL:${NC}      ${BOLD}http://$HOST:$PORT${NC}"
+fi
 echo -e "  ${CYAN}Workers:${NC}  ${BOLD}$WORKERS CPU workers${NC}"
 if [[ "$GPU_COUNT" -gt 0 ]]; then
 echo -e "  ${CYAN}GPUs:${NC}     ${BOLD}$GPU_COUNT × $GPU_NAME ($((GPU_VRAM_MB / 1024)) GB VRAM each)${NC}"
