@@ -251,27 +251,17 @@ _ADMIN_PASSWORD_HASH = hashlib.sha256(_ADMIN_PASSWORD.encode()).hexdigest() if _
 if _URL_PREFIX:
     from werkzeug.middleware.proxy_fix import ProxyFix
 
-    # Optional landing page served at the domain root (e.g. stelliro.com/)
-    _LANDING_PAGE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'index.html')
-    _HAS_LANDING_PAGE = os.path.isfile(_LANDING_PAGE)
-    if _HAS_LANDING_PAGE:
-        print(f"[PREFIX] Landing page: {_LANDING_PAGE}")
-
     class _PrefixMiddleware:
         """WSGI middleware that strips a URL prefix from PATH_INFO.
 
         When the app is served at a subpath (e.g. ``/PuffinZipAI``), this
         middleware strips the prefix before Flask sees the request and sets
         ``SCRIPT_NAME`` so that ``url_for()`` generates correct prefixed URLs.
-
-        If a landing page (``index.html``) exists at the project root, it is
-        served at ``/`` so that the domain root shows a splash page while the
-        dashboard lives under the prefix.
+        Non-prefixed requests return 404.
         """
-        def __init__(self, wsgi_app, prefix: str, landing_page: str | None = None):
+        def __init__(self, wsgi_app, prefix: str):
             self.app = wsgi_app
             self.prefix = prefix
-            self.landing_page = landing_page
 
         def __call__(self, environ, start_response):
             path: str = environ.get('PATH_INFO', '')
@@ -282,21 +272,7 @@ if _URL_PREFIX:
                 environ['SCRIPT_NAME'] = self.prefix
                 return self.app(environ, start_response)
 
-            # ── Domain root → serve static landing page (if available)
-            if self.landing_page and path in ('/', '/index.html'):
-                try:
-                    with open(self.landing_page, 'rb') as f:
-                        body = f.read()
-                    start_response('200 OK', [
-                        ('Content-Type', 'text/html; charset=utf-8'),
-                        ('Content-Length', str(len(body))),
-                        ('Cache-Control', 'public, max-age=300'),
-                    ])
-                    return [body]
-                except OSError:
-                    pass  # Fall through to 404
-
-            # ── Everything else → 404
+            # ── Everything else → 404 (not our path)
             start_response('404 NOT FOUND', [('Content-Type', 'text/plain')])
             return [b'Not Found']
 
@@ -304,7 +280,6 @@ if _URL_PREFIX:
     app.wsgi_app = _PrefixMiddleware(
         ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1),
         _URL_PREFIX,
-        landing_page=_LANDING_PAGE if _HAS_LANDING_PAGE else None,
     )
 else:
     # No prefix — still add ProxyFix for cloud deployments behind load balancers
@@ -314,8 +289,9 @@ else:
     except ImportError:
         pass
 
-# Routes that do NOT require authentication (health check for scripts)
-_PUBLIC_ROUTES = frozenset(['login', 'logout', 'health', 'static'])
+# Routes that do NOT require authentication (health check for scripts).
+# 'root' is public because it just redirects to 'dashboard' (which IS protected).
+_PUBLIC_ROUTES = frozenset(['login', 'logout', 'health', 'static', 'root'])
 
 # --- Brute-force rate limiting ---
 _LOGIN_ATTEMPTS: dict[str, list[float]] = {}  # ip → list of timestamps
@@ -405,7 +381,7 @@ def login():
                 session.permanent = True
                 # Clear rate-limit history on successful login
                 _LOGIN_ATTEMPTS.pop(client_ip, None)
-                return redirect(url_for('index'))
+                return redirect(url_for('dashboard'))
             _record_failed_attempt(client_ip)
             error = 'Invalid username or password.'
     return render_template('login.html', version=APP_VERSION, error=error)
@@ -572,7 +548,13 @@ app_state = AppState()
 app_state.load_cache()
 
 @app.route('/')
-def index(): 
+def root():
+    """Redirect prefix root → /login (user must authenticate first)."""
+    return redirect(url_for('login'))
+
+
+@app.route('/dashboard')
+def dashboard():
     return render_template('index.html', version=APP_VERSION, url_prefix=_URL_PREFIX)
 
 @app.route('/api/status')
