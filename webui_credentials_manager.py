@@ -8,18 +8,27 @@ loaded so the same credentials are reused.
 Credential file format::
 
     {
-        "username":      "<20-char alphanumeric>",
-        "password":      "<64-char alphanumeric>",
-        "secret_key":    "<64-char hex>",
-        "public_access": true | false
+        "username":         "<20-char alphanumeric>",
+        "password":         "<64-char alphanumeric>",
+        "secret_key":       "<64-char hex>",
+        "public_access":    true | false,
+        "admin_username":   "" | "<user-chosen>",
+        "admin_password":   "" | "<user-chosen>"
     }
 
 When ``public_access`` is **true** the server binds to ``0.0.0.0`` (reachable
 over the network / internet).  When **false** (the default for freshly
 generated credentials) it binds to ``127.0.0.1`` (local only).
 
+``admin_username`` / ``admin_password`` provide a secondary login for remote
+access (e.g. via a custom domain like ``stelliro.com/puffinzipai``).  Both
+must be non-empty to enable the admin login.  The auto-generated primary
+credentials continue to work alongside the admin ones.
+
 Environment-variable overrides (``PUFFIN_USERNAME``, ``PUFFIN_PASSWORD``,
 ``PUFFIN_SECRET_KEY``) still take precedence when set.
+``PUFFIN_ADMIN_USERNAME`` / ``PUFFIN_ADMIN_PASSWORD`` override the admin
+credentials.
 
 The file is added to ``.gitignore`` and must **never** be committed.
 """
@@ -39,6 +48,8 @@ class Credentials(TypedDict):
     password: str
     secret_key: str
     public_access: bool
+    admin_username: str
+    admin_password: str
 
 
 # ── Default paths ────────────────────────────────────────────────────────────
@@ -63,12 +74,19 @@ def _generate_credentials() -> Credentials:
     ``public_access`` defaults to **False** (local-only).  Set it to
     ``True`` in ``webui_credentials.json`` to expose the server over
     the network.
+
+    ``admin_username`` and ``admin_password`` default to empty strings.
+    Set them manually in ``webui_credentials.json`` or via the
+    ``PUFFIN_ADMIN_USERNAME`` / ``PUFFIN_ADMIN_PASSWORD`` environment
+    variables to enable a secondary (remote-access) login.
     """
     return Credentials(
         username=_generate_random_string(_USERNAME_LENGTH),
         password=_generate_random_string(_PASSWORD_LENGTH),
         secret_key=secrets.token_hex(_SECRET_KEY_LENGTH // 2),  # 32 bytes → 64 hex chars
         public_access=False,
+        admin_username='',
+        admin_password='',
     )
 
 
@@ -84,6 +102,8 @@ def _load_credentials_file(path: Path = _CREDENTIALS_FILE) -> Credentials | None
                 password=str(data['password']),
                 secret_key=str(data['secret_key']),
                 public_access=bool(data.get('public_access', False)),
+                admin_username=str(data.get('admin_username', '')),
+                admin_password=str(data.get('admin_password', '')),
             )
     except (OSError, json.JSONDecodeError, KeyError, TypeError):
         pass
@@ -119,7 +139,9 @@ def load_or_create_credentials(path: Path = _CREDENTIALS_FILE) -> Credentials:
     env_key  = os.environ.get('PUFFIN_SECRET_KEY', '').strip()
     if env_user and env_pass and env_key:
         return Credentials(username=env_user, password=env_pass, secret_key=env_key,
-                           public_access=os.environ.get('PUFFIN_PUBLIC_ACCESS', '').lower() in ('1', 'true', 'yes'))
+                           public_access=os.environ.get('PUFFIN_PUBLIC_ACCESS', '').lower() in ('1', 'true', 'yes'),
+                           admin_username=os.environ.get('PUFFIN_ADMIN_USERNAME', '').strip(),
+                           admin_password=os.environ.get('PUFFIN_ADMIN_PASSWORD', '').strip())
 
     # 2. Try loading from file
     creds = _load_credentials_file(path)
@@ -131,6 +153,13 @@ def load_or_create_credentials(path: Path = _CREDENTIALS_FILE) -> Credentials:
             creds['password'] = env_pass
         if env_key:
             creds['secret_key'] = env_key
+        # Admin credential env-var overrides
+        env_admin_user = os.environ.get('PUFFIN_ADMIN_USERNAME', '').strip()
+        env_admin_pass = os.environ.get('PUFFIN_ADMIN_PASSWORD', '').strip()
+        if env_admin_user:
+            creds['admin_username'] = env_admin_user
+        if env_admin_pass:
+            creds['admin_password'] = env_admin_pass
         return creds
 
     # 3. Generate fresh credentials and persist

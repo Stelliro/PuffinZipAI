@@ -13,8 +13,9 @@ PuffinZipAI/
 ├── main_cli.py                     # CLI entry point
 ├── run_gui.py                      # GUI launcher
 ├── webui_server.py                 # Flask web UI server
-├── webui_credentials_manager.py    # Auto-generates & persists WebUI credentials
+├── webui_credentials_manager.py    # Auto-generates & persists WebUI credentials (primary + admin)
 ├── webui_theme_manager.py          # Cross-platform theme system
+├── .env.example                    # Template for local-only .env config (git-tracked)
 ├── requirements.txt
 ├── README.md                       # Project overview & quick start
 ├── LICENSE                         # PolyForm Noncommercial 1.0.0
@@ -240,8 +241,8 @@ PuffinZipAI/
 ---
 
 ### webui_credentials_manager.py
-**Lines**: ~140  
-**Purpose**: Auto-generates and persists `webui_credentials.json` in the project root on first WebUI launch. Produces a 20-character alphanumeric username, a 64-character alphanumeric password, a 64-character hex secret key, and a `public_access` boolean (default `false`). When `public_access` is `true`, the server binds to `0.0.0.0` (network/internet-accessible); when `false`, it binds to `127.0.0.1` (local only). Env-var overrides (`PUFFIN_USERNAME`, `PUFFIN_PASSWORD`, `PUFFIN_SECRET_KEY`, `PUFFIN_PUBLIC_ACCESS`) still take precedence when set. The credentials file is `.gitignore`-ed and `chmod 600`-ed on Linux.
+**Lines**: ~155  
+**Purpose**: Auto-generates and persists `webui_credentials.json` in the project root on first WebUI launch. Produces a 20-character alphanumeric username, a 64-character alphanumeric password, a 64-character hex secret key, a `public_access` boolean (default `false`), and optional `admin_username` / `admin_password` fields (default empty). When `public_access` is `true`, the server binds to `0.0.0.0` (network/internet-accessible); when `false`, it binds to `127.0.0.1` (local only). The `admin_username` / `admin_password` fields provide a secondary login for remote access (e.g. `stelliro.com/puffinzipai`); both must be non-empty to enable the admin login. Env-var overrides: `PUFFIN_USERNAME`, `PUFFIN_PASSWORD`, `PUFFIN_SECRET_KEY`, `PUFFIN_PUBLIC_ACCESS`, `PUFFIN_ADMIN_USERNAME`, `PUFFIN_ADMIN_PASSWORD`. The credentials file is `.gitignore`-ed and `chmod 600`-ed on Linux.
 
 **Functions**:
 | Line | Name | Description |
@@ -1743,7 +1744,7 @@ entire evolutionary pipeline (crossover, mutation, selection, GUI, WebUI) works 
 
 | Script | Platform | Purpose |
 |--------|----------|---------|
-| `start.sh` (repo root) | Linux/macOS | **Universal launcher** — auto-detects hardware (CPU, RAM, GPU type & VRAM), clones repo if missing, creates venv, installs deps, generates credentials, reads `public_access` from credentials to determine bind address. Auto-detects RunPod (proxy URL) and Vast.ai; falls back to public IP detection for generic cloud/bare metal. Exports hardware profile env vars, starts WebUI. Run presets (Test / Medium / Max) are available in the WebUI. Env vars: `PUFFIN_GPUS`, `PUFFIN_WORKERS`, `PUFFIN_CACHE_MAX_MB`, `PUFFIN_CACHE_MAX_FILES`, `PUFFIN_PORT`, `PUFFIN_HOST`, `PUFFIN_REPO_URL`, `PUFFIN_REPO_BRANCH`, `GITHUB_TOKEN` |
+| `start.sh` (repo root) | Linux/macOS | **Universal launcher** — auto-detects hardware (CPU, RAM, GPU type & VRAM), clones repo if missing, creates venv, installs deps, generates credentials, reads `public_access` from credentials to determine bind address. Automatically loads `.env` (git-ignored) for local config overrides. Auto-detects RunPod (proxy URL) and Vast.ai; falls back to public IP detection for generic cloud/bare metal. Exports hardware profile env vars, starts WebUI. Run presets (Test / Medium / Max) are available in the WebUI. Env vars: `PUFFIN_GPUS`, `PUFFIN_WORKERS`, `PUFFIN_CACHE_MAX_MB`, `PUFFIN_CACHE_MAX_FILES`, `PUFFIN_PORT`, `PUFFIN_HOST`, `PUFFIN_REPO_URL`, `PUFFIN_REPO_BRANCH`, `GITHUB_TOKEN`, `PUFFIN_ADMIN_USERNAME`, `PUFFIN_ADMIN_PASSWORD`, `PUFFIN_CUSTOM_URL` |
 | `start.bat` (repo root) | Windows | **Universal launcher** — same as `start.sh` for Windows. Auto-detects hardware, creates venv, installs deps, generates credentials, detects RunPod/cloud platform, resolves connect URL, starts WebUI |
 | `run_webui_windows.bat` | Windows | Developer personal Windows launcher (port 5001) |
 | `run_gui.spec` | — | PyInstaller build spec for GUI executable |

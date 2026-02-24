@@ -182,3 +182,9 @@ snippet.txt
 
 # WebUI credentials (auto-generated, contains secrets)
 webui_credentials.json
+
+# Website landing page (contains site-specific config, not for git)
+/index.html
+
+# Local-only environment config (already covered by .env above, explicit for clarity)
+# .env

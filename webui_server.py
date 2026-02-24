@@ -215,6 +215,11 @@ app.secret_key = _credentials['secret_key']
 _PUBLIC_ACCESS = _credentials.get('public_access', False)
 _AUTH_ENABLED = True  # Always enabled — credentials are guaranteed non-empty
 
+# Admin / remote-access credentials (optional secondary login)
+_ADMIN_USERNAME = _credentials.get('admin_username', '').strip()
+_ADMIN_PASSWORD = _credentials.get('admin_password', '').strip()
+_ADMIN_AUTH_ENABLED = bool(_ADMIN_USERNAME and _ADMIN_PASSWORD)
+
 # Session hardening
 app.config.update(
     SESSION_COOKIE_HTTPONLY=True,       # JS cannot read the session cookie
@@ -226,6 +231,10 @@ app.config.update(
 # Both username and password are hashed so all comparisons are constant-time.
 _AUTH_USERNAME_HASH = hashlib.sha256(_AUTH_USERNAME.encode()).hexdigest()
 _AUTH_PASSWORD_HASH = hashlib.sha256(_AUTH_PASSWORD.encode()).hexdigest() if _AUTH_PASSWORD else ''
+
+# Pre-hash admin credentials (empty hash if admin auth is disabled)
+_ADMIN_USERNAME_HASH = hashlib.sha256(_ADMIN_USERNAME.encode()).hexdigest() if _ADMIN_AUTH_ENABLED else ''
+_ADMIN_PASSWORD_HASH = hashlib.sha256(_ADMIN_PASSWORD.encode()).hexdigest() if _ADMIN_AUTH_ENABLED else ''
 
 # Routes that do NOT require authentication (health check for scripts)
 _PUBLIC_ROUTES = frozenset(['login', 'logout', 'health', 'static'])
@@ -267,6 +276,26 @@ def _check_password(candidate: str) -> bool:
     )
 
 
+def _check_admin_username(candidate: str) -> bool:
+    """Constant-time admin username comparison via SHA-256."""
+    if not _ADMIN_AUTH_ENABLED:
+        return False
+    return secrets.compare_digest(
+        hashlib.sha256(candidate.encode()).hexdigest(),
+        _ADMIN_USERNAME_HASH,
+    )
+
+
+def _check_admin_password(candidate: str) -> bool:
+    """Constant-time admin password comparison via SHA-256."""
+    if not _ADMIN_AUTH_ENABLED:
+        return False
+    return secrets.compare_digest(
+        hashlib.sha256(candidate.encode()).hexdigest(),
+        _ADMIN_PASSWORD_HASH,
+    )
+
+
 @app.before_request
 def _require_login():
     """Redirect unauthenticated users to the login page."""
@@ -292,7 +321,8 @@ def login():
         else:
             username = request.form.get('username', '')
             password = request.form.get('password', '')
-            if _check_username(username) and _check_password(password):
+            if (_check_username(username) and _check_password(password)) or \
+               (_check_admin_username(username) and _check_admin_password(password)):
                 session['authenticated'] = True
                 session.permanent = True
                 # Clear rate-limit history on successful login
@@ -1385,4 +1415,8 @@ if __name__ == '__main__':
     print(f"--- Credentials file: {_CREDENTIALS_FILE} ---")
     print(f"--- Username: {_AUTH_USERNAME} ---")
     print(f"--- Password: {_AUTH_PASSWORD} ---")
+    if _ADMIN_AUTH_ENABLED:
+        print(f"--- Admin login: ENABLED (user: {_ADMIN_USERNAME}) ---")
+    else:
+        print(f"--- Admin login: DISABLED (set admin_username/admin_password in credentials file or .env) ---")
     app.run(host=args.host, port=args.port, debug=args.debug, use_reloader=False)

@@ -19,11 +19,22 @@
 #    PUFFIN_USERNAME        Override WebUI login username
 #    PUFFIN_PASSWORD        Override WebUI login password
 #    PUFFIN_SECRET_KEY      Override Flask secret key
+#    PUFFIN_ADMIN_USERNAME        Override admin/remote login username
+#    PUFFIN_ADMIN_PASSWORD        Override admin/remote login password
+#    PUFFIN_CUSTOM_URL            Custom URL shown in banner (e.g. https://stelliro.com/puffinzipai)
 #    PUFFIN_REPO_URL        Override repo clone URL
 #    PUFFIN_REPO_BRANCH     Branch to checkout       (default: main)
 # ============================================================================
 set -euo pipefail
-
+# ── Load .env (local-only config, git-ignored) ─────────────────────────────────────────────
+_SCRIPT_DIR_EARLY="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ -f "${_SCRIPT_DIR_EARLY}/.env" ]]; then
+    # Export every non-comment, non-empty line
+    set -a
+    # shellcheck disable=SC1091
+    source "${_SCRIPT_DIR_EARLY}/.env"
+    set +a
+fi
 # ── Config ───────────────────────────────────────────────────────────────────
 REPO_URL="${PUFFIN_REPO_URL:-https://github.com/Stelliro/PuffinZipAI.git}"
 REPO_BRANCH="${PUFFIN_REPO_BRANCH:-main}"
@@ -428,6 +439,9 @@ echo -e "  ${CYAN}Bind:${NC}     ${BOLD}$HOST:$PORT${NC}"
 else
 echo -e "  ${CYAN}URL:${NC}      ${BOLD}http://$HOST:$PORT${NC}"
 fi
+if [[ -n "${PUFFIN_CUSTOM_URL:-}" ]]; then
+echo -e "  ${CYAN}Custom:${NC}   ${BOLD}${PUFFIN_CUSTOM_URL}${NC}"
+fi
 if [[ -n "$PLATFORM" ]]; then
 echo -e "  ${CYAN}Platform:${NC} ${BOLD}$PLATFORM${NC}"
 fi
@@ -441,6 +455,11 @@ echo -e "  ${CYAN}RAM:${NC}      ${BOLD}${RAM_GB} GB${NC}"
 echo -e "  ${CYAN}CPU:${NC}      ${BOLD}${CPU_CORES} cores${NC}"
 echo -e "  ${CYAN}Cache:${NC}    ${BOLD}${CACHE_MAX_MB} MB / ${CACHE_MAX_FILES} files max (LRU eviction)${NC}"
 echo -e "  ${CYAN}Auth:${NC}     ${BOLD}Enabled (credentials in webui_credentials.json)${NC}"
+if [[ -n "${PUFFIN_ADMIN_USERNAME:-}" && -n "${PUFFIN_ADMIN_PASSWORD:-}" ]]; then
+echo -e "  ${CYAN}Admin:${NC}    ${BOLD}Enabled (remote-access login active)${NC}"
+else
+echo -e "  ${CYAN}Admin:${NC}    ${BOLD}Disabled (set PUFFIN_ADMIN_USERNAME/PASSWORD in .env)${NC}"
+fi
 if [[ "$HOST" == "0.0.0.0" ]]; then
 echo -e "  ${CYAN}Access:${NC}   ${BOLD}Public (network-accessible)${NC}"
 else
