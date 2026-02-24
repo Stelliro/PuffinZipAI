@@ -135,6 +135,14 @@ fi
 
 VENV_DIR="$PROJECT_DIR/.venv"
 
+# ── Load .env from project directory (may differ from script directory) ──────
+if [[ "$PROJECT_DIR" != "$SCRIPT_DIR" && -f "$PROJECT_DIR/.env" ]]; then
+    set -a
+    # shellcheck disable=SC1091
+    source "$PROJECT_DIR/.env"
+    set +a
+fi
+
 # ── 1. System checks ────────────────────────────────────────────────────────
 banner
 
@@ -414,8 +422,8 @@ PLATFORM=""
 
 # Read custom_url from credentials file (if it exists)
 CUSTOM_URL="${PUFFIN_CUSTOM_URL:-}"
-if [[ -z "$CUSTOM_URL" && -f "$SCRIPT_DIR/webui_credentials.json" ]]; then
-    CUSTOM_URL=$(python3 -c "import json; d=json.load(open('$SCRIPT_DIR/webui_credentials.json')); print(d.get('custom_url',''))" 2>/dev/null || echo "")
+if [[ -z "$CUSTOM_URL" && -f "$PROJECT_DIR/webui_credentials.json" ]]; then
+    CUSTOM_URL=$(python3 -c "import json; d=json.load(open('$PROJECT_DIR/webui_credentials.json')); print(d.get('custom_url',''))" 2>/dev/null || echo "")
 fi
 
 # Extract URL prefix from custom_url (e.g. /puffinzipai)
