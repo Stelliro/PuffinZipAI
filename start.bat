@@ -314,26 +314,31 @@ echo.
 REM ── Cloudflare Tunnel (auto-detect and start) ────────────────────────────
 set "TUNNEL_STARTED=0"
 where cloudflared >nul 2>&1
-if !errorlevel! equ 0 (
-    REM Check if a named tunnel 'puffinzipai' exists
-    cloudflared tunnel list 2>nul | findstr /i "puffinzipai" >nul 2>&1
-    if !errorlevel! equ 0 (
-        echo [i] Cloudflare Tunnel detected — starting tunnel...
-        start "" /b cloudflared tunnel run puffinzipai >nul 2>&1
-        set "TUNNEL_STARTED=1"
-        echo [OK] Tunnel 'puffinzipai' started in background
-    ) else (
-        echo [i] cloudflared found but no 'puffinzipai' tunnel configured
+if !errorlevel! neq 0 goto :NO_CLOUDFLARED
+
+REM cloudflared is installed — check for named tunnel
+cloudflared tunnel list 2>nul | findstr /i "puffinzipai" >nul 2>&1
+if !errorlevel! neq 0 (
+    echo [i] cloudflared found but no 'puffinzipai' tunnel configured
+    echo     See docs\CLOUDFLARE_TUNNEL_GUIDE.md for setup instructions
+    goto :TUNNEL_DONE
+)
+
+echo [i] Cloudflare Tunnel detected — starting tunnel...
+start "" /b cloudflared tunnel run puffinzipai >nul 2>&1
+set "TUNNEL_STARTED=1"
+echo [OK] Tunnel 'puffinzipai' started in background
+goto :TUNNEL_DONE
+
+:NO_CLOUDFLARED
+if defined CUSTOM_URL (
+    if not "!CUSTOM_URL!"=="" (
+        echo [i] Install cloudflared to expose this server at !CUSTOM_URL!
         echo     See docs\CLOUDFLARE_TUNNEL_GUIDE.md for setup instructions
     )
-) else (
-    if defined CUSTOM_URL (
-        if not "!CUSTOM_URL!"=="" (
-            echo [i] Install cloudflared to expose this server at !CUSTOM_URL!
-            echo     See docs\CLOUDFLARE_TUNNEL_GUIDE.md for setup instructions
-        )
-    )
 )
+
+:TUNNEL_DONE
 echo.
 
 REM Start server in background and wait for health check
@@ -356,7 +361,20 @@ goto WAIT_FOR_SERVER
 :SERVER_READY
 echo.
 echo [OK] Server is ready! Opening browser...
+if not "!TUNNEL_STARTED!"=="1" goto :OPEN_LOCAL
+if not defined CUSTOM_URL goto :OPEN_LOCAL
+
+REM Tunnel active + custom_url set → open the public URL
+set "OPEN_URL=!CUSTOM_URL!"
+echo !OPEN_URL! | findstr /i "://" >nul 2>&1
+if !errorlevel! neq 0 set "OPEN_URL=https://!OPEN_URL!"
+start !OPEN_URL!
+goto :BROWSER_DONE
+
+:OPEN_LOCAL
 start http://localhost:!PUFFIN_PORT!!URL_PREFIX!
+
+:BROWSER_DONE
 
 set "SERVER_PID="
 for /f %%p in ('powershell -NoProfile -Command "$conn = Get-NetTCPConnection -LocalPort !PUFFIN_PORT! -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1; if ($conn) { $conn.OwningProcess }"') do set "SERVER_PID=%%p"
