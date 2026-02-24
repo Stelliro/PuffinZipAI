@@ -38,6 +38,41 @@ CACHE_MAX_FILES="${PUFFIN_CACHE_MAX_FILES:-500}"
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
 CYAN='\033[0;36m'; BOLD='\033[1m'; NC='\033[0m'
 
+# ── Port availability helper ────────────────────────────────────────────────
+_port_in_use() {
+    # Returns 0 (true) if port is in use, 1 (false) if free
+    if command -v ss &>/dev/null; then
+        ss -tlnH "sport = :$1" 2>/dev/null | grep -q .
+    elif command -v netstat &>/dev/null; then
+        netstat -tlnp 2>/dev/null | grep -q ":$1 "
+    else
+        # Fallback: try to connect
+        (echo >/dev/tcp/127.0.0.1/$1) 2>/dev/null
+    fi
+}
+
+_find_free_port() {
+    # Try preferred port first, then scan candidates
+    local preferred="$1"
+    shift
+    local candidates=("$preferred" "$@")
+
+    for p in "${candidates[@]}"; do
+        if ! _port_in_use "$p"; then
+            echo "$p"
+            return 0
+        fi
+    done
+    # Last resort: ask the OS for an ephemeral port
+    local ep
+    ep=$(python3 -c "import socket; s=socket.socket(); s.bind(('',0)); print(s.getsockname()[1]); s.close()" 2>/dev/null || echo "")
+    if [[ -n "$ep" ]]; then
+        echo "$ep"
+        return 0
+    fi
+    return 1
+}
+
 banner() {
 cat << 'EOF'
 
@@ -278,7 +313,77 @@ if [[ -z "$HOST" ]]; then
     fi
 fi
 
-# ── 7. Detect connect URL (RunPod proxy / public IP / local) ────────────────
+# ── 7. Resolve available port ────────────────────────────────────────────────
+# On RunPod the proxy only forwards ports listed in RUNPOD_TCP_PORT_70 etc.
+# We build a candidate list: preferred port, RunPod-exposed ports, common fallbacks.
+PREFERRED_PORT="$PORT"
+PORT_CANDIDATES=()
+
+if [[ -n "${RUNPOD_POD_ID:-}" ]]; then
+    # Collect all RunPod-exposed TCP ports from the environment
+    RUNPOD_EXPOSED=()
+    while IFS= read -r varname; do
+        rp_port="${!varname}"
+        if [[ -n "$rp_port" && "$rp_port" =~ ^[0-9]+$ ]]; then
+            RUNPOD_EXPOSED+=("$rp_port")
+        fi
+    done < <(compgen -v | grep -E '^RUNPOD_TCP_PORT_[0-9]+$')
+
+    if [[ ${#RUNPOD_EXPOSED[@]} -gt 0 ]]; then
+        info "RunPod exposed TCP ports: ${BOLD}${RUNPOD_EXPOSED[*]}${NC}"
+    fi
+
+    # Check if preferred port is in the RunPod exposed list
+    _port_exposed=false
+    for rp in "${RUNPOD_EXPOSED[@]}"; do
+        if [[ "$rp" == "$PREFERRED_PORT" ]]; then
+            _port_exposed=true
+            break
+        fi
+    done
+
+    if $_port_exposed; then
+        # Preferred port is exposed — use it if available
+        PORT_CANDIDATES=("$PREFERRED_PORT" "${RUNPOD_EXPOSED[@]}")
+    else
+        # Preferred port is NOT exposed by RunPod — try exposed ports first
+        if [[ ${#RUNPOD_EXPOSED[@]} -gt 0 ]]; then
+            warn "Port ${BOLD}$PREFERRED_PORT${NC} is not in RunPod's exposed HTTP ports"
+            info "Trying RunPod-exposed ports instead..."
+            PORT_CANDIDATES=("${RUNPOD_EXPOSED[@]}" "$PREFERRED_PORT")
+        else
+            PORT_CANDIDATES=("$PREFERRED_PORT")
+        fi
+    fi
+else
+    # Non-RunPod: preferred → common fallbacks
+    PORT_CANDIDATES=("$PREFERRED_PORT" 5001 5002 5003 8080 8888 9000)
+fi
+
+# Remove duplicates while preserving order
+declare -A _seen_ports
+UNIQUE_CANDIDATES=()
+for p in "${PORT_CANDIDATES[@]}"; do
+    if [[ -z "${_seen_ports[$p]:-}" ]]; then
+        _seen_ports[$p]=1
+        UNIQUE_CANDIDATES+=("$p")
+    fi
+done
+
+# Find a free port from the candidates
+CHOSEN_PORT=$(_find_free_port "${UNIQUE_CANDIDATES[@]}")
+if [[ -z "$CHOSEN_PORT" ]]; then
+    err "No available port found. Tried: ${UNIQUE_CANDIDATES[*]}"
+    exit 1
+fi
+
+if [[ "$CHOSEN_PORT" != "$PREFERRED_PORT" ]]; then
+    warn "Port ${BOLD}$PREFERRED_PORT${NC} is in use → switching to ${BOLD}$CHOSEN_PORT${NC}"
+fi
+PORT="$CHOSEN_PORT"
+info "Using port ${BOLD}$PORT${NC}"
+
+# ── 8. Detect connect URL (RunPod proxy / public IP / local) ────────────────
 CONNECT_URL=""
 PLATFORM=""
 if [[ -n "${RUNPOD_POD_ID:-}" ]]; then
@@ -304,7 +409,7 @@ elif [[ "$HOST" == "0.0.0.0" ]]; then
     fi
 fi
 
-# ── 8. Start server ─────────────────────────────────────────────────────────
+# ── 9. Start server ─────────────────────────────────────────────────────────
 echo ""
 echo -e "${BOLD}════════════════════════════════════════════════════════════${NC}"
 echo -e "${BOLD}  Starting PuffinZipAI WebUI${NC}"
