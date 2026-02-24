@@ -81,19 +81,60 @@ except Exception as e:
     get_hybrid_engine = None
 
 app = Flask(__name__, static_folder='webui_static', template_folder='webui_templates')
-app.secret_key = os.environ.get('PUFFIN_SECRET_KEY', secrets.token_hex(32))
 CORS(app)
 
-# --- AUTHENTICATION ---
-_AUTH_USERNAME = os.environ.get('PUFFIN_USERNAME', '')
-_AUTH_PASSWORD = os.environ.get('PUFFIN_PASSWORD', '')
-_AUTH_ENABLED = bool(_AUTH_USERNAME and _AUTH_PASSWORD)
+# --- AUTHENTICATION (credentials file + env-var override) ---
+from datetime import timedelta as _timedelta
+from webui_credentials_manager import load_or_create_credentials, _CREDENTIALS_FILE
 
-# Pre-hash the password so we never compare in plain text after startup
+_credentials = load_or_create_credentials()
+_AUTH_USERNAME = _credentials['username']
+_AUTH_PASSWORD = _credentials['password']
+app.secret_key = _credentials['secret_key']
+_AUTH_ENABLED = True  # Always enabled — credentials are guaranteed non-empty
+
+# Session hardening
+app.config.update(
+    SESSION_COOKIE_HTTPONLY=True,       # JS cannot read the session cookie
+    SESSION_COOKIE_SAMESITE='Lax',      # CSRF mitigation
+    PERMANENT_SESSION_LIFETIME=_timedelta(hours=12),  # Auto-expire after 12 h
+)
+
+# Pre-hash credentials so we never compare in plain text after startup.
+# Both username and password are hashed so all comparisons are constant-time.
+_AUTH_USERNAME_HASH = hashlib.sha256(_AUTH_USERNAME.encode()).hexdigest()
 _AUTH_PASSWORD_HASH = hashlib.sha256(_AUTH_PASSWORD.encode()).hexdigest() if _AUTH_PASSWORD else ''
 
 # Routes that do NOT require authentication (health check for scripts)
 _PUBLIC_ROUTES = frozenset(['login', 'logout', 'health', 'static'])
+
+# --- Brute-force rate limiting ---
+_LOGIN_ATTEMPTS: dict[str, list[float]] = {}  # ip → list of timestamps
+_MAX_LOGIN_ATTEMPTS = 5        # max failures per window
+_LOGIN_WINDOW_SECONDS = 300    # 5-minute sliding window
+
+
+def _is_rate_limited(ip: str) -> bool:
+    """Return True if *ip* has exceeded the login attempt limit."""
+    now = time.time()
+    attempts = _LOGIN_ATTEMPTS.get(ip, [])
+    # Prune old entries outside the window
+    attempts = [t for t in attempts if now - t < _LOGIN_WINDOW_SECONDS]
+    _LOGIN_ATTEMPTS[ip] = attempts
+    return len(attempts) >= _MAX_LOGIN_ATTEMPTS
+
+
+def _record_failed_attempt(ip: str) -> None:
+    """Record a failed login attempt for *ip*."""
+    _LOGIN_ATTEMPTS.setdefault(ip, []).append(time.time())
+
+
+def _check_username(candidate: str) -> bool:
+    """Constant-time username comparison via SHA-256."""
+    return secrets.compare_digest(
+        hashlib.sha256(candidate.encode()).hexdigest(),
+        _AUTH_USERNAME_HASH,
+    )
 
 
 def _check_password(candidate: str) -> bool:
@@ -123,13 +164,20 @@ def _require_login():
 def login():
     error = None
     if request.method == 'POST':
-        username = request.form.get('username', '')
-        password = request.form.get('password', '')
-        if username == _AUTH_USERNAME and _check_password(password):
-            session['authenticated'] = True
-            session.permanent = True
-            return redirect(url_for('index'))
-        error = 'Invalid username or password.'
+        client_ip = request.remote_addr or '0.0.0.0'
+        if _is_rate_limited(client_ip):
+            error = 'Too many failed attempts. Please wait a few minutes.'
+        else:
+            username = request.form.get('username', '')
+            password = request.form.get('password', '')
+            if _check_username(username) and _check_password(password):
+                session['authenticated'] = True
+                session.permanent = True
+                # Clear rate-limit history on successful login
+                _LOGIN_ATTEMPTS.pop(client_ip, None)
+                return redirect(url_for('index'))
+            _record_failed_attempt(client_ip)
+            error = 'Invalid username or password.'
     return render_template('login.html', version=APP_VERSION, error=error)
 
 
@@ -1176,4 +1224,8 @@ if __name__ == '__main__':
     
     print(f"--- SERVER READY: http://{args.host}:{args.port} ---")
     print(f"--- Debug mode: {'ON' if args.debug else 'OFF'} ---")
+    print(f"--- Auth: ENABLED ---")
+    print(f"--- Credentials file: {_CREDENTIALS_FILE} ---")
+    print(f"--- Username: {_AUTH_USERNAME} ---")
+    print(f"--- Password: {_AUTH_PASSWORD} ---")
     app.run(host=args.host, port=args.port, debug=args.debug, use_reloader=False)

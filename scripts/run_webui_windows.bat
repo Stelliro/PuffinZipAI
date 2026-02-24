@@ -4,11 +4,13 @@ REM PuffinZipAI Web UI Launcher - Windows
 REM   Usage:  run_webui_windows.bat             (normal mode)
 REM           run_webui_windows.bat --debug      (debug/verbose mode)
 REM
-REM   Environment variables (all optional):
+REM   Credentials are auto-generated into webui_credentials.json on first run.
+REM   Environment variables (all optional — override the credentials file):
 REM     PUFFIN_HOST         Bind address          (default: 0.0.0.0)
 REM     PUFFIN_PORT         WebUI port            (default: 5001)
-REM     PUFFIN_USERNAME     WebUI login username  (prompted if not set)
-REM     PUFFIN_PASSWORD     WebUI login password  (prompted if not set)
+REM     PUFFIN_USERNAME     Override login username
+REM     PUFFIN_PASSWORD     Override login password
+REM     PUFFIN_SECRET_KEY   Override Flask secret key
 REM ============================================================================
 
 setlocal enabledelayedexpansion
@@ -39,23 +41,11 @@ REM --- Host / Port config ---
 if not defined PUFFIN_HOST set "PUFFIN_HOST=0.0.0.0"
 if not defined PUFFIN_PORT set "PUFFIN_PORT=5001"
 
-REM --- Authentication credentials ---
-if not defined PUFFIN_USERNAME (
-    echo.
-    set /p PUFFIN_USERNAME="Enter WebUI username: "
-)
-if not defined PUFFIN_PASSWORD (
-    echo.
-    REM Note: input is visible on Windows CMD — set PUFFIN_PASSWORD env var beforehand for silent mode
-    set /p PUFFIN_PASSWORD="Enter WebUI password: "
-)
-if "!PUFFIN_USERNAME!"=="" (
-    echo ERROR: Username cannot be empty.
-    pause
-    exit /b 1
-)
-if "!PUFFIN_PASSWORD!"=="" (
-    echo ERROR: Password cannot be empty.
+REM --- Ensure credentials file exists (auto-generates on first run) ---
+echo Ensuring WebUI credentials...
+%PYTHON_EXE% -c "from webui_credentials_manager import load_or_create_credentials, _CREDENTIALS_FILE; c = load_or_create_credentials(); print(f'  Credentials file: {_CREDENTIALS_FILE}'); print(f'  Username: {c[\"username\"]}'); print(f'  Password: {c[\"password\"]}')"
+if %errorlevel% neq 0 (
+    echo ERROR: Failed to load or generate credentials.
     pause
     exit /b 1
 )
@@ -99,7 +89,7 @@ echo.
 echo ======================================================
 echo   PuffinZipAI Web UI - Starting Server
 echo   Binding to !PUFFIN_HOST!:!PUFFIN_PORT!
-echo   Authentication: ENABLED (user: !PUFFIN_USERNAME!)
+echo   Authentication: ENABLED (see credentials above)
 echo   Waiting for server readiness before opening browser
 echo   Press any key later to stop the server
 echo ======================================================

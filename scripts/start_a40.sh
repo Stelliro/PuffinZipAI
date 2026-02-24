@@ -16,8 +16,9 @@
 #    PUFFIN_CACHE_MAX_MB  GitHub cache limit in MB (default: 200)
 #    PUFFIN_CACHE_MAX_FILES  Max cached files      (default: 500)
 #    GITHUB_TOKEN         GitHub API token         (optional, higher rate limits)
-#    PUFFIN_USERNAME      WebUI login username     (prompted if not set)
-#    PUFFIN_PASSWORD      WebUI login password     (prompted if not set)
+#    PUFFIN_USERNAME      Override WebUI login username  (auto-generated if not set)
+#    PUFFIN_PASSWORD      Override WebUI login password  (auto-generated if not set)
+#    PUFFIN_SECRET_KEY    Override Flask secret key       (auto-generated if not set)
 #    PUFFIN_REPO_URL      Override repo clone URL
 #    PUFFIN_REPO_BRANCH   Branch to checkout       (default: main)
 # ============================================================================
@@ -32,27 +33,6 @@ HOST="${PUFFIN_HOST:-0.0.0.0}"
 WORKERS="${PUFFIN_WORKERS:-0}"
 CACHE_MAX_MB="${PUFFIN_CACHE_MAX_MB:-200}"
 CACHE_MAX_FILES="${PUFFIN_CACHE_MAX_FILES:-500}"
-
-# ── Authentication ───────────────────────────────────────────────────────────
-# Prompt for credentials if not supplied via environment
-if [[ -z "${PUFFIN_USERNAME:-}" ]]; then
-    read -rp "$(echo -e "${CYAN}[?]${NC} Enter WebUI username: ")" PUFFIN_USERNAME
-    if [[ -z "$PUFFIN_USERNAME" ]]; then
-        err "Username cannot be empty."
-        exit 1
-    fi
-fi
-
-if [[ -z "${PUFFIN_PASSWORD:-}" ]]; then
-    read -rsp "$(echo -e "${CYAN}[?]${NC} Enter WebUI password: ")" PUFFIN_PASSWORD
-    echo  # newline after silent input
-    if [[ -z "$PUFFIN_PASSWORD" ]]; then
-        err "Password cannot be empty."
-        exit 1
-    fi
-fi
-
-export PUFFIN_USERNAME PUFFIN_PASSWORD
 
 # ── Colours ──────────────────────────────────────────────────────────────────
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
@@ -272,9 +252,21 @@ else
 echo -e "  ${CYAN}GPUs:${NC}     ${BOLD}None (CPU-only mode)${NC}"
 fi
 echo -e "  ${CYAN}Cache:${NC}    ${BOLD}${CACHE_MAX_MB} MB / ${CACHE_MAX_FILES} files max (LRU eviction)${NC}"
-echo -e "  ${CYAN}Auth:${NC}     ${BOLD}Enabled (user: $PUFFIN_USERNAME)${NC}"
+echo -e "  ${CYAN}Auth:${NC}     ${BOLD}Enabled (credentials in webui_credentials.json)${NC}"
 echo -e "  ${CYAN}Console:${NC}  Live logs below — Ctrl+C to stop"
 echo -e "${BOLD}════════════════════════════════════════════════════════════${NC}"
+echo ""
+
+# ── Ensure credentials file exists (auto-generates on first run) ────────────
+info "Ensuring WebUI credentials..."
+python -c "
+from webui_credentials_manager import load_or_create_credentials, _CREDENTIALS_FILE
+c = load_or_create_credentials()
+print(f'  Credentials file: {_CREDENTIALS_FILE}')
+print(f'  Username: {c[\"username\"]}')
+print(f'  Password: {c[\"password\"]}')
+" || { err "Failed to load or generate credentials."; exit 1; }
+log "Credentials ready"
 echo ""
 
 # Export worker count so the WebUI can suggest it as default

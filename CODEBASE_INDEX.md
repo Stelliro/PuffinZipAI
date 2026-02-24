@@ -13,6 +13,7 @@ PuffinZipAI/
 ├── main_cli.py                     # CLI entry point
 ├── run_gui.py                      # GUI launcher
 ├── webui_server.py                 # Flask web UI server
+├── webui_credentials_manager.py    # Auto-generates & persists WebUI credentials
 ├── webui_theme_manager.py          # Cross-platform theme system
 ├── requirements.txt
 ├── README.md                       # Project overview & quick start
@@ -237,6 +238,28 @@ PuffinZipAI/
 | `webui_static/js/logger.js` | `logMessage()` + `escapeHtml()` helpers |
 
 **Complexity Metrics Flow**: `evolutionary_optimizer._send_metrics_json()` → `METRICS_JSON:` string via queue → `Bridge.put_nowait()` in webui_server → `AppState` fields → `/api/metrics` JSON → `app.js pollMetrics()` → KPI cards + sidebar + chart dataset
+
+---
+
+### webui_credentials_manager.py
+**Lines**: ~130  
+**Purpose**: Auto-generates and persists `webui_credentials.json` in the project root on first WebUI launch. Produces a 20-character alphanumeric username, a 64-character alphanumeric password, and a 64-character hex secret key. Env-var overrides (`PUFFIN_USERNAME`, `PUFFIN_PASSWORD`, `PUFFIN_SECRET_KEY`) still take precedence when set. The credentials file is `.gitignore`-ed and `chmod 600`-ed on Linux.
+
+**Functions**:
+| Line | Name | Description |
+|------|------|-------------|
+| 55 | `_generate_random_string()` | Crypto-random alphanumeric string of a given length |
+| 60 | `_generate_credentials()` | Creates a fresh `Credentials` dict |
+| 67 | `_load_credentials_file()` | Reads `webui_credentials.json` from disk |
+| 83 | `_save_credentials_file()` | Writes credentials JSON with restrictive permissions |
+| 93 | `load_or_create_credentials()` | Main entry — env-vars → file → auto-generate (priority order) |
+
+**Constants**:
+| Line | Name | Description |
+|------|------|-------------|
+| 40 | `_CREDENTIALS_FILE` | Path to `webui_credentials.json` |
+| 43 | `_USERNAME_LENGTH` | 20 |
+| 44 | `_PASSWORD_LENGTH` | 64 |
 
 ---
 
