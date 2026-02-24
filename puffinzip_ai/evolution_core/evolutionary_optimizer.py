@@ -175,7 +175,7 @@ class EvolutionaryOptimizer:
         user_batch_size = kwargs.get('population_batch_size', None)
         
         # CPU evaluation workers — split evaluation across multiple processes
-        self._cpu_eval_workers = max(1, min(int(kwargs.get('cpu_eval_workers', 1)), 32))
+        self._cpu_eval_workers = max(1, min(int(kwargs.get('cpu_eval_workers', 1)), 256))
         
         # --- RESOURCE UTILIZATION TARGET: 70% ---
         # Process all agents every generation, but batch them to stay within 70% resource usage

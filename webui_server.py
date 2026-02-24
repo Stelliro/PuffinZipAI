@@ -36,14 +36,16 @@ def _detect_system_limits():
             pass
     
     # Scale defaults to system resources
-    if ram_gb >= 16 and cpu_cores >= 8:
-        default_pop, default_gens, max_pop, max_gens = 100, 200, 500, 10000
+    if ram_gb >= 64 and cpu_cores >= 32:
+        default_pop, default_gens, max_pop, max_gens = 200, 500, 2000, 100000
+    elif ram_gb >= 16 and cpu_cores >= 8:
+        default_pop, default_gens, max_pop, max_gens = 100, 200, 1000, 50000
     elif ram_gb >= 8 and cpu_cores >= 4:
-        default_pop, default_gens, max_pop, max_gens = 50, 100, 200, 5000
+        default_pop, default_gens, max_pop, max_gens = 50, 100, 500, 10000
     elif ram_gb >= 4:
-        default_pop, default_gens, max_pop, max_gens = 30, 50, 100, 2000
+        default_pop, default_gens, max_pop, max_gens = 30, 50, 200, 5000
     else:
-        default_pop, default_gens, max_pop, max_gens = 20, 30, 50, 500
+        default_pop, default_gens, max_pop, max_gens = 20, 30, 100, 2000
     
     return {
         'ram_gb': round(ram_gb, 1),
@@ -98,6 +100,8 @@ def _compute_run_presets(hw):
     cpu = hw['cpu_cores']
     ram = hw['ram_gb']
     vram = hw['gpu_vram_mb']
+    gpu_count = hw.get('gpu_count', 1) if hw['has_gpu'] else 0
+    total_vram = vram * max(1, gpu_count)  # Total VRAM across all GPUs
     has_gpu = hw['has_gpu']
 
     # Workers: leave 1 core free, min 2
@@ -123,12 +127,14 @@ def _compute_run_presets(hw):
     else:
         med_pop, med_gens, med_batch = 20, 40, 6
 
-    # GPU VRAM scaling for medium
-    if has_gpu and vram >= 40000:      # A100 / A40 class
+    # GPU VRAM scaling for medium (total across all GPUs)
+    if has_gpu and total_vram >= 80000:    # Multi-A40 / A100 class
+        med_pop, med_batch = 150, 32
+    elif has_gpu and total_vram >= 40000:  # A100 / A40 class
         med_pop, med_batch = 80, 16
-    elif has_gpu and vram >= 20000:    # RTX 3090 / 4090 class
+    elif has_gpu and total_vram >= 20000:  # RTX 3090 / 4090 class
         med_pop, med_batch = 60, 12
-    elif has_gpu and vram >= 8000:     # RTX 3070 / 4060 class
+    elif has_gpu and total_vram >= 8000:   # RTX 3070 / 4060 class
         med_pop = max(med_pop, 40)
 
     medium = {
@@ -152,14 +158,16 @@ def _compute_run_presets(hw):
     else:
         max_pop, max_gens, max_batch = 40, 100, 8
 
-    # GPU VRAM scaling for max
-    if has_gpu and vram >= 80000:      # H100 class
-        max_pop, max_batch = 500, 32
-    elif has_gpu and vram >= 40000:    # A100 / A40 class
+    # GPU VRAM scaling for max (total across all GPUs)
+    if has_gpu and total_vram >= 160000:   # Multi-H100 class
+        max_pop, max_batch = 1000, 64
+    elif has_gpu and total_vram >= 80000:  # Multi-A40, H100 class
+        max_pop, max_batch = 500, 48
+    elif has_gpu and total_vram >= 40000:  # A100 / A40 class
         max_pop, max_batch = 300, 24
-    elif has_gpu and vram >= 20000:    # RTX 3090 / 4090 class
+    elif has_gpu and total_vram >= 20000:  # RTX 3090 / 4090 class
         max_pop, max_batch = 150, 16
-    elif has_gpu and vram >= 8000:
+    elif has_gpu and total_vram >= 8000:
         max_pop = max(max_pop, 80)
 
     maximum = {
@@ -766,7 +774,7 @@ def start():
     batch_size = max(1, min(int(config.get('batch_size', 10)), pop_size))
     infinite_mode = bool(config.get('infinite', False))
     target_device = config.get('target_device', 'GPU_AUTO')
-    cpu_workers = max(1, min(int(config.get('cpu_workers', 4)), 32))
+    cpu_workers = max(1, min(int(config.get('cpu_workers', 4)), 256))
 
     def run_thread(p, g, batch_sz=10, infinite=False, device='GPU_AUTO', workers=4):
         app_state.is_training = True
