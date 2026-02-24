@@ -220,6 +220,9 @@ _ADMIN_USERNAME = _credentials.get('admin_username', '').strip()
 _ADMIN_PASSWORD = _credentials.get('admin_password', '').strip()
 _ADMIN_AUTH_ENABLED = bool(_ADMIN_USERNAME and _ADMIN_PASSWORD)
 
+# Custom URL for remote access (informational — shown in banner)
+_CUSTOM_URL = _credentials.get('custom_url', '').strip()
+
 # Session hardening
 app.config.update(
     SESSION_COOKIE_HTTPONLY=True,       # JS cannot read the session cookie
@@ -1404,6 +1407,8 @@ if __name__ == '__main__':
                 continue
 
     print(f">>> [SUCCESS] PuffinZipAI {APP_VERSION} loaded correctly.")
+    if _CUSTOM_URL:
+        print(f"--- CUSTOM URL: {_CUSTOM_URL} ---")
     if _connect_url:
         print(f"--- CONNECT URL: {_connect_url} ---")
     print(f"--- SERVER READY: http://{args.host}:{args.port} ---")

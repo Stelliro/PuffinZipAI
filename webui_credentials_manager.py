@@ -13,7 +13,8 @@ Credential file format::
         "secret_key":       "<64-char hex>",
         "public_access":    true | false,
         "admin_username":   "" | "<user-chosen>",
-        "admin_password":   "" | "<user-chosen>"
+        "admin_password":   "" | "<user-chosen>",
+        "custom_url":       "" | "https://stelliro.com/puffinzipai"
     }
 
 When ``public_access`` is **true** the server binds to ``0.0.0.0`` (reachable
@@ -25,10 +26,14 @@ access (e.g. via a custom domain like ``stelliro.com/puffinzipai``).  Both
 must be non-empty to enable the admin login.  The auto-generated primary
 credentials continue to work alongside the admin ones.
 
+``custom_url`` is the public-facing URL where the dashboard is accessible
+(e.g. ``https://stelliro.com/puffinzipai``).  It is informational — shown
+in the startup banner so you know where to connect.  Default is empty.
+
 Environment-variable overrides (``PUFFIN_USERNAME``, ``PUFFIN_PASSWORD``,
 ``PUFFIN_SECRET_KEY``) still take precedence when set.
 ``PUFFIN_ADMIN_USERNAME`` / ``PUFFIN_ADMIN_PASSWORD`` override the admin
-credentials.
+credentials.  ``PUFFIN_CUSTOM_URL`` overrides ``custom_url``.
 
 The file is added to ``.gitignore`` and must **never** be committed.
 """
@@ -50,6 +55,7 @@ class Credentials(TypedDict):
     public_access: bool
     admin_username: str
     admin_password: str
+    custom_url: str
 
 
 # ── Default paths ────────────────────────────────────────────────────────────
@@ -87,6 +93,7 @@ def _generate_credentials() -> Credentials:
         public_access=False,
         admin_username='',
         admin_password='',
+        custom_url='',
     )
 
 
@@ -104,6 +111,7 @@ def _load_credentials_file(path: Path = _CREDENTIALS_FILE) -> Credentials | None
                 public_access=bool(data.get('public_access', False)),
                 admin_username=str(data.get('admin_username', '')),
                 admin_password=str(data.get('admin_password', '')),
+                custom_url=str(data.get('custom_url', '')),
             )
     except (OSError, json.JSONDecodeError, KeyError, TypeError):
         pass
@@ -141,7 +149,8 @@ def load_or_create_credentials(path: Path = _CREDENTIALS_FILE) -> Credentials:
         return Credentials(username=env_user, password=env_pass, secret_key=env_key,
                            public_access=os.environ.get('PUFFIN_PUBLIC_ACCESS', '').lower() in ('1', 'true', 'yes'),
                            admin_username=os.environ.get('PUFFIN_ADMIN_USERNAME', '').strip(),
-                           admin_password=os.environ.get('PUFFIN_ADMIN_PASSWORD', '').strip())
+                           admin_password=os.environ.get('PUFFIN_ADMIN_PASSWORD', '').strip(),
+                           custom_url=os.environ.get('PUFFIN_CUSTOM_URL', '').strip())
 
     # 2. Try loading from file
     creds = _load_credentials_file(path)
@@ -160,6 +169,10 @@ def load_or_create_credentials(path: Path = _CREDENTIALS_FILE) -> Credentials:
             creds['admin_username'] = env_admin_user
         if env_admin_pass:
             creds['admin_password'] = env_admin_pass
+        # Custom URL env-var override
+        env_custom_url = os.environ.get('PUFFIN_CUSTOM_URL', '').strip()
+        if env_custom_url:
+            creds['custom_url'] = env_custom_url
         return creds
 
     # 3. Generate fresh credentials and persist

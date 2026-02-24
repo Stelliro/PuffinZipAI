@@ -406,6 +406,13 @@ info "Using port ${BOLD}$PORT${NC}"
 # ── 8. Detect connect URL (RunPod proxy / public IP / local) ────────────────
 CONNECT_URL=""
 PLATFORM=""
+
+# Read custom_url from credentials file (if it exists)
+CUSTOM_URL="${PUFFIN_CUSTOM_URL:-}"
+if [[ -z "$CUSTOM_URL" && -f "$SCRIPT_DIR/webui_credentials.json" ]]; then
+    CUSTOM_URL=$(python3 -c "import json; d=json.load(open('$SCRIPT_DIR/webui_credentials.json')); print(d.get('custom_url',''))" 2>/dev/null || echo "")
+fi
+
 if [[ -n "${RUNPOD_POD_ID:-}" ]]; then
     # RunPod: pods are behind NAT — use the RunPod reverse-proxy URL
     PLATFORM="RunPod"
@@ -439,8 +446,8 @@ echo -e "  ${CYAN}Bind:${NC}     ${BOLD}$HOST:$PORT${NC}"
 else
 echo -e "  ${CYAN}URL:${NC}      ${BOLD}http://$HOST:$PORT${NC}"
 fi
-if [[ -n "${PUFFIN_CUSTOM_URL:-}" ]]; then
-echo -e "  ${CYAN}Custom:${NC}   ${BOLD}${PUFFIN_CUSTOM_URL}${NC}"
+if [[ -n "$CUSTOM_URL" ]]; then
+echo -e "  ${CYAN}Website:${NC}  ${BOLD}${CUSTOM_URL}${NC}"
 fi
 if [[ -n "$PLATFORM" ]]; then
 echo -e "  ${CYAN}Platform:${NC} ${BOLD}$PLATFORM${NC}"
