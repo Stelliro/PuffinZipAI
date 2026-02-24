@@ -311,6 +311,31 @@ echo   Console:  Live logs below
 echo ========================================================
 echo.
 
+REM ── Cloudflare Tunnel (auto-detect and start) ────────────────────────────
+set "TUNNEL_STARTED=0"
+where cloudflared >nul 2>&1
+if !errorlevel! equ 0 (
+    REM Check if a named tunnel 'puffinzipai' exists
+    cloudflared tunnel list 2>nul | findstr /i "puffinzipai" >nul 2>&1
+    if !errorlevel! equ 0 (
+        echo [i] Cloudflare Tunnel detected — starting tunnel...
+        start "" /b cloudflared tunnel run puffinzipai >nul 2>&1
+        set "TUNNEL_STARTED=1"
+        echo [OK] Tunnel 'puffinzipai' started in background
+    ) else (
+        echo [i] cloudflared found but no 'puffinzipai' tunnel configured
+        echo     See docs\CLOUDFLARE_TUNNEL_GUIDE.md for setup instructions
+    )
+) else (
+    if defined CUSTOM_URL (
+        if not "!CUSTOM_URL!"=="" (
+            echo [i] Install cloudflared to expose this server at !CUSTOM_URL!
+            echo     See docs\CLOUDFLARE_TUNNEL_GUIDE.md for setup instructions
+        )
+    )
+)
+echo.
+
 REM Start server in background and wait for health check
 set "SERVER_LOG=%TEMP%\puffinzip_webui_%RANDOM%.log"
 start "" /b %PYTHON_EXE% webui_server.py --host !PUFFIN_HOST! --port !PUFFIN_PORT! %DEBUG_FLAG% > "%SERVER_LOG%" 2>&1
@@ -346,6 +371,10 @@ pause >nul
 if defined SERVER_PID (
     echo Stopping server ^(PID: !SERVER_PID!^)...
     taskkill /pid !SERVER_PID! /f >nul 2>&1
+)
+if "!TUNNEL_STARTED!"=="1" (
+    echo Stopping Cloudflare Tunnel...
+    taskkill /im cloudflared.exe /f >nul 2>&1
 )
 echo Server stopped. Goodbye!
 goto :EOF

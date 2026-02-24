@@ -490,6 +490,33 @@ echo -e "  ${CYAN}Console:${NC}  Live logs below — Ctrl+C to stop"
 echo -e "${BOLD}════════════════════════════════════════════════════════════${NC}"
 echo ""
 
+# ── Cloudflare Tunnel (auto-detect and start) ────────────────────────────────
+TUNNEL_PID=""
+if command -v cloudflared &>/dev/null; then
+    if cloudflared tunnel list 2>/dev/null | grep -qi "puffinzipai"; then
+        info "Cloudflare Tunnel detected — starting tunnel..."
+        cloudflared tunnel run puffinzipai &>/dev/null &
+        TUNNEL_PID=$!
+        info "Tunnel 'puffinzipai' started (PID $TUNNEL_PID)"
+    else
+        log "cloudflared found but no 'puffinzipai' tunnel configured"
+        log "See docs/CLOUDFLARE_TUNNEL_GUIDE.md for setup instructions"
+    fi
+elif [[ -n "$CUSTOM_URL" ]]; then
+    log "Install cloudflared to expose this server at $CUSTOM_URL"
+    log "See docs/CLOUDFLARE_TUNNEL_GUIDE.md for setup instructions"
+fi
+
+# Cleanup tunnel on exit
+cleanup() {
+    if [[ -n "$TUNNEL_PID" ]]; then
+        info "Stopping Cloudflare Tunnel (PID $TUNNEL_PID)..."
+        kill "$TUNNEL_PID" 2>/dev/null
+        wait "$TUNNEL_PID" 2>/dev/null
+    fi
+}
+trap cleanup EXIT INT TERM
+
 # Export worker count so the WebUI can suggest it as default
 export PUFFIN_DEFAULT_WORKERS="$WORKERS"
 

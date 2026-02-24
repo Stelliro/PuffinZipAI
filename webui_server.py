@@ -247,34 +247,65 @@ _AUTH_PASSWORD_HASH = hashlib.sha256(_AUTH_PASSWORD.encode()).hexdigest() if _AU
 _ADMIN_USERNAME_HASH = hashlib.sha256(_ADMIN_USERNAME.encode()).hexdigest() if _ADMIN_AUTH_ENABLED else ''
 _ADMIN_PASSWORD_HASH = hashlib.sha256(_ADMIN_PASSWORD.encode()).hexdigest() if _ADMIN_AUTH_ENABLED else ''
 
-# ── URL prefix middleware (subpath hosting, e.g. /puffinzipai) ───────────────
+# ── URL prefix middleware (subpath hosting, e.g. /PuffinZipAI) ───────────────
 if _URL_PREFIX:
     from werkzeug.middleware.proxy_fix import ProxyFix
+
+    # Optional landing page served at the domain root (e.g. stelliro.com/)
+    _LANDING_PAGE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'index.html')
+    _HAS_LANDING_PAGE = os.path.isfile(_LANDING_PAGE)
+    if _HAS_LANDING_PAGE:
+        print(f"[PREFIX] Landing page: {_LANDING_PAGE}")
 
     class _PrefixMiddleware:
         """WSGI middleware that strips a URL prefix from PATH_INFO.
 
-        When the app is served at a subpath (e.g. ``/puffinzipai``), this
+        When the app is served at a subpath (e.g. ``/PuffinZipAI``), this
         middleware strips the prefix before Flask sees the request and sets
         ``SCRIPT_NAME`` so that ``url_for()`` generates correct prefixed URLs.
-        Requests that do NOT start with the prefix get a 404.
+
+        If a landing page (``index.html``) exists at the project root, it is
+        served at ``/`` so that the domain root shows a splash page while the
+        dashboard lives under the prefix.
         """
-        def __init__(self, wsgi_app, prefix: str):
+        def __init__(self, wsgi_app, prefix: str, landing_page: str | None = None):
             self.app = wsgi_app
             self.prefix = prefix
+            self.landing_page = landing_page
 
         def __call__(self, environ, start_response):
-            path = environ.get('PATH_INFO', '')
+            path: str = environ.get('PATH_INFO', '')
+
+            # ── Prefixed requests → strip prefix, pass to Flask
             if path == self.prefix or path.startswith(self.prefix + '/'):
                 environ['PATH_INFO'] = path[len(self.prefix):] or '/'
                 environ['SCRIPT_NAME'] = self.prefix
                 return self.app(environ, start_response)
-            # Not under our prefix — 404
+
+            # ── Domain root → serve static landing page (if available)
+            if self.landing_page and path in ('/', '/index.html'):
+                try:
+                    with open(self.landing_page, 'rb') as f:
+                        body = f.read()
+                    start_response('200 OK', [
+                        ('Content-Type', 'text/html; charset=utf-8'),
+                        ('Content-Length', str(len(body))),
+                        ('Cache-Control', 'public, max-age=300'),
+                    ])
+                    return [body]
+                except OSError:
+                    pass  # Fall through to 404
+
+            # ── Everything else → 404
             start_response('404 NOT FOUND', [('Content-Type', 'text/plain')])
             return [b'Not Found']
 
     # Stack: ProxyFix (reads X-Forwarded-*) → PrefixMiddleware → Flask
-    app.wsgi_app = _PrefixMiddleware(ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1), _URL_PREFIX)
+    app.wsgi_app = _PrefixMiddleware(
+        ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1),
+        _URL_PREFIX,
+        landing_page=_LANDING_PAGE if _HAS_LANDING_PAGE else None,
+    )
 else:
     # No prefix — still add ProxyFix for cloud deployments behind load balancers
     try:

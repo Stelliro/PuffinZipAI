@@ -105,6 +105,7 @@ PuffinZipAI/
 │   ├── README.md
 │   ├── HYBRID_COMPRESSION_GUIDE.md
 │   ├── WEBUI_GUIDE.md
+│   ├── CLOUDFLARE_TUNNEL_GUIDE.md  # Cloudflare Tunnel setup for custom domain hosting
 │   └── changelog.md
 │
 ├── data/                           # Training data & models
@@ -189,7 +190,7 @@ PuffinZipAI/
 | Line | Name | Description |
 |------|------|-------------|
 | 65 | `AppState` | Manages training state, metrics queue, log queue, **complexity tracking** (`current_complexity_tier`, `current_complexity_value`, `current_tier_budget_mb`, `current_tier_ceiling_kb`), **anti-corruption tracking** (`current_best_robustness`, `current_training_phase`, `current_corruption_level`, `current_decomp_mismatches`, `current_items_evaluated`, `current_successful_compressions`), **disk cache** (`save_cache()`, `load_cache()` for `webui_metrics_cache.json`), **run history** (`run_number`, `run_history[]`, `completed_naturally`, `archive_run()`) |
-| ~253 | `_PrefixMiddleware` | WSGI middleware that strips a URL prefix from `PATH_INFO` and sets `SCRIPT_NAME` for subpath hosting (e.g. `/PuffinZipAI`). Non-prefixed requests return 404. Only active when `custom_url` has a path component. |
+| ~253 | `_PrefixMiddleware` | WSGI middleware that strips a URL prefix from `PATH_INFO` and sets `SCRIPT_NAME` for subpath hosting (e.g. `/PuffinZipAI`). Non-prefixed requests return 404 (except `/` which serves the landing page if `index.html` exists at project root). Only active when `custom_url` has a path component. |
 
 **Functions**:
 | Line | Name | Description |
@@ -1745,8 +1746,8 @@ entire evolutionary pipeline (crossover, mutation, selection, GUI, WebUI) works 
 
 | Script | Platform | Purpose |
 |--------|----------|---------|
-| `start.sh` (repo root) | Linux/macOS | **Universal launcher** — auto-detects hardware (CPU, RAM, GPU type & VRAM), clones repo if missing, creates venv, installs deps, generates credentials, reads `public_access` from credentials to determine bind address. Automatically loads `.env` (git-ignored) for local config overrides. Auto-detects RunPod (proxy URL) and Vast.ai; falls back to public IP detection for generic cloud/bare metal. Exports hardware profile env vars, starts WebUI. Run presets (Test / Medium / Max) are available in the WebUI. Env vars: `PUFFIN_GPUS`, `PUFFIN_WORKERS`, `PUFFIN_CACHE_MAX_MB`, `PUFFIN_CACHE_MAX_FILES`, `PUFFIN_PORT`, `PUFFIN_HOST`, `PUFFIN_REPO_URL`, `PUFFIN_REPO_BRANCH`, `GITHUB_TOKEN`, `PUFFIN_ADMIN_USERNAME`, `PUFFIN_ADMIN_PASSWORD`, `PUFFIN_CUSTOM_URL` |
-| `start.bat` (repo root) | Windows | **Universal launcher** — same as `start.sh` for Windows. Auto-detects hardware, creates venv, installs deps, generates credentials, detects RunPod/cloud platform, resolves connect URL, starts WebUI |
+| `start.sh` (repo root) | Linux/macOS | **Universal launcher** — auto-detects hardware (CPU, RAM, GPU type & VRAM), clones repo if missing, creates venv, installs deps, generates credentials, reads `public_access` from credentials to determine bind address. Automatically loads `.env` (git-ignored) for local config overrides. Auto-detects RunPod (proxy URL) and Vast.ai; falls back to public IP detection for generic cloud/bare metal. Auto-starts Cloudflare Tunnel (`puffinzipai`) if `cloudflared` is installed. Exports hardware profile env vars, starts WebUI. Run presets (Test / Medium / Max) are available in the WebUI. Env vars: `PUFFIN_GPUS`, `PUFFIN_WORKERS`, `PUFFIN_CACHE_MAX_MB`, `PUFFIN_CACHE_MAX_FILES`, `PUFFIN_PORT`, `PUFFIN_HOST`, `PUFFIN_REPO_URL`, `PUFFIN_REPO_BRANCH`, `GITHUB_TOKEN`, `PUFFIN_ADMIN_USERNAME`, `PUFFIN_ADMIN_PASSWORD`, `PUFFIN_CUSTOM_URL` |
+| `start.bat` (repo root) | Windows | **Universal launcher** — same as `start.sh` for Windows. Auto-detects hardware, creates venv, installs deps, generates credentials, detects RunPod/cloud platform, resolves connect URL, auto-starts Cloudflare Tunnel if available, starts WebUI |
 | `run_webui_windows.bat` | Windows | Developer personal Windows launcher (port 5001) |
 | `run_gui.spec` | — | PyInstaller build spec for GUI executable |
 | `package_a100.bat` + `_package_a100_impl.ps1` | Windows | Packages all deployment files into a ZIP for pod deployment |
