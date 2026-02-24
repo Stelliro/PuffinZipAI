@@ -2,7 +2,7 @@
 
 **Project**: PuffinZipAI v0.9.8  
 **Description**: AI-driven compression system using Q-learning agents with evolutionary optimization  
-**Last Updated**: 2026-02-24
+**Last Updated**: 2026-02-25
 
 ---
 
@@ -86,15 +86,13 @@ PuffinZipAI/
 ├── webui_templates/                # Web UI HTML templates
 │   └── index.html\n│   └── login.html
 │
-├── scripts/                        # Launcher scripts & build specs
-│   ├── start_a40.sh              # A40 pod launcher (self-contained: auto-clone, multi-GPU/CPU, cache eviction)
-│   ├── start_a100.sh             # A100 PCIe pod launcher (self-contained: auto-clone, multi-GPU/CPU, cache eviction)
-│   ├── package_a100.bat          # Windows: package project ZIP for A100 pod
+├── start.sh                        # Universal Linux/macOS launcher (hardware auto-detect + run presets)
+├── start.bat                       # Universal Windows launcher (hardware auto-detect + run presets)
+│
+├── scripts/                        # Build helpers & dev scripts
+│   ├── package_a100.bat          # Windows: package project ZIP for pod deployment
 │   ├── _package_a100_impl.ps1    # PowerShell implementation for package_a100.bat
-│   ├── run_gui_windows.bat
-│   ├── run_webui_windows.bat
-│   ├── run_webui.sh
-│   ├── generate_datasets.bat
+│   ├── run_webui_windows.bat     # Developer's personal Windows launcher
 │   ├── preflight_metrics_check.py
 │   └── run_gui.spec
 │
@@ -1739,17 +1737,15 @@ entire evolutionary pipeline (crossover, mutation, selection, GUI, WebUI) works 
 
 ---
 
-## scripts/ — Launcher Scripts
+## scripts/ — Launcher Scripts & Build Helpers
 
 ---
 
 | Script | Platform | Purpose |
 |--------|----------|---------|
-| `run_gui_windows.bat` | Windows | Launches GUI with venv setup & dependency install |
-| `run_webui_windows.bat` | Windows | Launches Flask web UI (port 5001) |
-| `run_webui.sh` | Linux/macOS | Launches Flask web UI (port 5000) |
-| `generate_datasets.bat` | Windows | Generates benchmark dataset files |
+| `start.sh` (repo root) | Linux/macOS | **Universal launcher** — auto-detects hardware (CPU, RAM, GPU type & VRAM), clones repo if missing, creates venv, installs deps, generates credentials, exports hardware profile env vars, starts WebUI on 0.0.0.0:5001. Run presets (Test / Medium / Max) are available in the WebUI. Env vars: `PUFFIN_GPUS`, `PUFFIN_WORKERS`, `PUFFIN_CACHE_MAX_MB`, `PUFFIN_CACHE_MAX_FILES`, `PUFFIN_PORT`, `PUFFIN_HOST`, `PUFFIN_REPO_URL`, `PUFFIN_REPO_BRANCH`, `GITHUB_TOKEN` |
+| `start.bat` (repo root) | Windows | **Universal launcher** — same as `start.sh` for Windows. Auto-detects hardware, creates venv, installs deps, generates credentials, starts WebUI |
+| `run_webui_windows.bat` | Windows | Developer personal Windows launcher (port 5001) |
 | `run_gui.spec` | — | PyInstaller build spec for GUI executable |
-| `start_a40.sh` | Linux | **Self-contained** A40 pod launcher — clones repo if missing, creates venv, installs deps (CUDA PyTorch + CuPy), enumerates all GPUs (`CUDA_VISIBLE_DEVICES`), auto-detects CPU workers, runs pre-flight cache eviction, starts WebUI. Env vars: `PUFFIN_GPUS`, `PUFFIN_WORKERS`, `PUFFIN_CACHE_MAX_MB`, `PUFFIN_CACHE_MAX_FILES`, `PUFFIN_PORT`, `PUFFIN_HOST`, `PUFFIN_REPO_URL`, `PUFFIN_REPO_BRANCH`, `GITHUB_TOKEN` |
-| `start_a100.sh` | Linux | **Self-contained** A100 PCIe pod launcher — same as A40 with A100 VRAM checks. All env vars from A40 script apply |
-| `package_a100.bat` + `_package_a100_impl.ps1` | Windows | Packages all deployment files into a ZIP for the A100 PCIe pod (pre-cleans __pycache__/logs, excludes .venv/data/models) |
+| `package_a100.bat` + `_package_a100_impl.ps1` | Windows | Packages all deployment files into a ZIP for pod deployment |
+| `preflight_metrics_check.py` | — | Pre-flight cache and metrics validation |

@@ -4,15 +4,18 @@
 
 ### Windows
 ```bash
-run_webui_windows.bat
+start.bat
 ```
 
 ### Linux/macOS
 ```bash
-./run_webui.sh
+bash start.sh
 ```
 
-Then open: **http://localhost:5000**
+Then open: **http://localhost:5001**
+
+The universal launcher auto-detects your hardware and configures PuffinZipAI accordingly.
+Run presets (Test / Medium / Max) are available in the WebUI dashboard.
 
 ---
 
@@ -72,29 +75,18 @@ A **complete, modern web-based UI** for PuffinZipAI with:
 
 **Windows:**
 ```bash
-run_webui_windows.bat
+start.bat
 ```
 
 **Linux/macOS:**
 ```bash
-chmod +x run_webui.sh
-./run_webui.sh
+bash start.sh
 ```
 
-**Manual Start:**
+**Manual Start (advanced):**
 ```bash
-python webui_server.py --host 127.0.0.1 --port 5000
-```
-
-**Advanced Options:**
-```bash
-python webui_server.py --help
-
-Options:
-  --host HOST          Server host (default: 127.0.0.1)
-  --port PORT          Server port (default: 5000)
-  --debug              Enable debug mode
-  --public             Bind to 0.0.0.0 (public network access)
+python webui_server.py --host 0.0.0.0 --port 5001
+python webui_server.py --host 0.0.0.0 --port 5001 --debug
 ```
 
 ---
@@ -390,8 +382,11 @@ Your old GUI (`run_gui.py`) is completely preserved and functional:
 # Old GUI (Tkinter)
 python run_gui.py
 
-# New Web UI
-./run_webui_windows.bat
+# New Web UI (Windows)
+start.bat
+
+# New Web UI (Linux)
+bash start.sh
 ```
 
 ### What Changed?
@@ -607,8 +602,9 @@ PuffinZipAI/
 │       ├── app.js                  # Main app logic
 │       ├── charts.js               # Graph management
 │       └── logger.js               # Log handling
-├── run_webui_windows.bat           # Windows launcher
-├── run_webui.sh                    # Linux/macOS launcher
+├── run_webui_windows.bat           # Windows launcher (dev)
+├── start.sh                        # Universal Linux/macOS launcher
+├── start.bat                       # Universal Windows launcher
 ├── WEBUI_GUIDE.md                  # This file
 │
 ├── puffinzip_gui/                  # Old GUI (still available)
@@ -684,18 +680,18 @@ Planned features for future releases:
 ### Start the Web UI
 ```bash
 # Windows
-run_webui_windows.bat
+start.bat
 
 # Linux/macOS
-./run_webui.sh
+bash start.sh
 
 # Manual
-python webui_server.py
+python webui_server.py --host 0.0.0.0 --port 5001
 ```
 
 ### Access URL
 ```
-http://localhost:5000
+http://localhost:5001
 ```
 
 ### Start Training

@@ -181,6 +181,22 @@
                 <div class="sidebar-card">
                     <div class="sidebar-card-header">⚙️ Configuration</div>
                     <div class="sidebar-card-body compact-form">
+                        <!-- Run Presets -->
+                        <div class="preset-section" id="preset-section">
+                            <div class="preset-label">Run Preset:</div>
+                            <div class="preset-buttons">
+                                <button class="btn btn-sm btn-preset" id="preset-test" title="Quick smoke test">🧪 Test</button>
+                                <button class="btn btn-sm btn-preset" id="preset-medium" title="Balanced training run">⚡ Medium</button>
+                                <button class="btn btn-sm btn-preset" id="preset-max" title="Full-power run">🔥 Max</button>
+                            </div>
+                            <div class="preset-description" id="preset-description"></div>
+                        </div>
+                        <div class="hw-info-row" id="hw-info-row" style="display:none;">
+                            <span class="hw-chip" id="hw-chip-gpu" title="GPU"></span>
+                            <span class="hw-chip" id="hw-chip-ram" title="RAM"></span>
+                            <span class="hw-chip" id="hw-chip-cpu" title="CPU"></span>
+                        </div>
+                        <hr style="border-color:var(--border-color);margin:6px 0;">
                         <div class="form-row">
                             <label for="generations">Gens:</label>
                             <input type="number" id="generations" min="1" max="10000" value="100">

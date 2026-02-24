@@ -58,6 +58,127 @@ def _detect_system_limits():
 SYSTEM_LIMITS = _detect_system_limits()
 _debug_mode = False  # Set True by --debug flag
 
+# --- HARDWARE PROFILE & RUN PRESETS ---
+def _build_hardware_profile():
+    """Build a hardware profile dict from env vars set by start.sh / start.bat
+    and from runtime detection via psutil / torch."""
+    gpu_count = int(os.environ.get('PUFFIN_HW_GPU_COUNT', 0))
+    gpu_name = os.environ.get('PUFFIN_HW_GPU_NAME', 'None')
+    gpu_vram_mb = int(os.environ.get('PUFFIN_HW_GPU_VRAM_MB', 0))
+    cpu_cores = int(os.environ.get('PUFFIN_HW_CPU_CORES', SYSTEM_LIMITS['cpu_cores']))
+    ram_mb = int(os.environ.get('PUFFIN_HW_RAM_MB', int(SYSTEM_LIMITS['ram_gb'] * 1024)))
+    ram_gb = round(ram_mb / 1024, 1)
+
+    # If env vars weren't set (e.g. running webui_server.py directly), detect at runtime
+    if gpu_count == 0 and gpu_name == 'None':
+        try:
+            import torch
+            if torch.cuda.is_available():
+                gpu_count = torch.cuda.device_count()
+                if gpu_count > 0:
+                    gpu_name = torch.cuda.get_device_name(0)
+                    gpu_vram_mb = int(torch.cuda.get_device_properties(0).total_mem / (1024 * 1024))
+        except Exception:
+            pass
+
+    return {
+        'gpu_count': gpu_count,
+        'gpu_name': gpu_name,
+        'gpu_vram_mb': gpu_vram_mb,
+        'gpu_vram_gb': round(gpu_vram_mb / 1024, 1) if gpu_vram_mb > 0 else 0,
+        'cpu_cores': cpu_cores,
+        'ram_mb': ram_mb,
+        'ram_gb': ram_gb,
+        'has_gpu': gpu_count > 0,
+    }
+
+
+def _compute_run_presets(hw):
+    """Return test / medium / max presets calibrated to the detected hardware."""
+    cpu = hw['cpu_cores']
+    ram = hw['ram_gb']
+    vram = hw['gpu_vram_mb']
+    has_gpu = hw['has_gpu']
+
+    # Workers: leave 1 core free, min 2
+    safe_workers = max(2, cpu - 1)
+
+    # ── TEST preset — quick smoke test (< 5 min) ────────────────────────
+    test = {
+        'label': 'Test Run',
+        'description': 'Quick smoke test (~2-5 min). Small population, few generations.',
+        'population_size': 12,
+        'num_generations': 10,
+        'batch_size': 6,
+        'cpu_workers': min(safe_workers, 4),
+        'target_device': 'GPU_AUTO' if has_gpu else 'CPU',
+        'infinite': False,
+    }
+
+    # ── MEDIUM preset — balanced run ─────────────────────────────────────
+    if ram >= 16 and cpu >= 8:
+        med_pop, med_gens, med_batch = 50, 100, 10
+    elif ram >= 8 and cpu >= 4:
+        med_pop, med_gens, med_batch = 30, 60, 8
+    else:
+        med_pop, med_gens, med_batch = 20, 40, 6
+
+    # GPU VRAM scaling for medium
+    if has_gpu and vram >= 40000:      # A100 / A40 class
+        med_pop, med_batch = 80, 16
+    elif has_gpu and vram >= 20000:    # RTX 3090 / 4090 class
+        med_pop, med_batch = 60, 12
+    elif has_gpu and vram >= 8000:     # RTX 3070 / 4060 class
+        med_pop = max(med_pop, 40)
+
+    medium = {
+        'label': 'Medium Run',
+        'description': 'Balanced training run (~30-60 min). Good for exploration.',
+        'population_size': med_pop,
+        'num_generations': med_gens,
+        'batch_size': med_batch,
+        'cpu_workers': safe_workers,
+        'target_device': 'GPU_AUTO' if has_gpu else 'CPU',
+        'infinite': False,
+    }
+
+    # ── MAX preset — full power, infinite mode ───────────────────────────
+    if ram >= 32 and cpu >= 16:
+        max_pop, max_gens, max_batch = 200, 500, 20
+    elif ram >= 16 and cpu >= 8:
+        max_pop, max_gens, max_batch = 100, 300, 16
+    elif ram >= 8 and cpu >= 4:
+        max_pop, max_gens, max_batch = 60, 200, 10
+    else:
+        max_pop, max_gens, max_batch = 40, 100, 8
+
+    # GPU VRAM scaling for max
+    if has_gpu and vram >= 80000:      # H100 class
+        max_pop, max_batch = 500, 32
+    elif has_gpu and vram >= 40000:    # A100 / A40 class
+        max_pop, max_batch = 300, 24
+    elif has_gpu and vram >= 20000:    # RTX 3090 / 4090 class
+        max_pop, max_batch = 150, 16
+    elif has_gpu and vram >= 8000:
+        max_pop = max(max_pop, 80)
+
+    maximum = {
+        'label': 'Max Run',
+        'description': 'Full-power run (infinite mode). Uses all available resources.',
+        'population_size': max_pop,
+        'num_generations': max_gens,
+        'batch_size': max_batch,
+        'cpu_workers': safe_workers,
+        'target_device': 'GPU_AUTO' if has_gpu else 'CPU',
+        'infinite': True,
+    }
+
+    return {'test': test, 'medium': medium, 'max': maximum}
+
+
+HARDWARE_PROFILE = _build_hardware_profile()
+RUN_PRESETS = _compute_run_presets(HARDWARE_PROFILE)
+
 # --- CONFIGURATION ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 if BASE_DIR not in sys.path:
@@ -359,6 +480,15 @@ def status():
         'can_continue': (not app_state.is_training 
                          and app_state.optimizer is not None),
         'run_history_count': len(app_state.run_history),
+    })
+
+
+@app.route('/api/hardware-profile')
+def hardware_profile():
+    """Return detected hardware profile and run presets for the dashboard."""
+    return jsonify({
+        'hardware': HARDWARE_PROFILE,
+        'presets': RUN_PRESETS,
     })
 
 @app.route('/api/metrics')

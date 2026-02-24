@@ -95,17 +95,22 @@ Add-RecursiveFiles 'tests' @('*.py')
 
 # --- Scripts (explicit list — no result JSONs) ---
 $scriptFiles = @(
-    'scripts\start_a100.sh',
-    'scripts\start_a40.sh',
-    'scripts\run_webui.sh',
     'scripts\run_webui_windows.bat',
-    'scripts\run_gui_windows.bat',
-    'scripts\generate_datasets.bat',
     'scripts\run_gui.spec',
     'scripts\preflight_metrics_check.py',
     'scripts\package_a100.bat',
     'scripts\_package_a100_impl.ps1'
 )
+foreach ($f in $scriptFiles) {
+    $full = Join-Path $ProjectDir $f
+    if (Test-Path $full) { $files.Add($f) }
+}
+
+# Universal launchers (repo root)
+foreach ($launcher in @('start.sh', 'start.bat')) {
+    $full = Join-Path $ProjectDir $launcher
+    if (Test-Path $full) { $files.Add($launcher) }
+}
 foreach ($f in $scriptFiles) {
     $full = Join-Path $ProjectDir $f
     if (Test-Path $full) { $files.Add($f) }
@@ -158,8 +163,8 @@ Write-Host '============================================================'
 Write-Host "  Package ready: $ZipName"
 Write-Host "  Location:      $ZipPath"
 Write-Host ''
-Write-Host '  Deploy to A100 pod:'
+Write-Host '  Deploy to pod:'
 Write-Host '    1. Upload ZIP to the pod'
 Write-Host "    2. unzip $ZipName"
-Write-Host '    3. cd PuffinZipAI && bash scripts/start_a100.sh'
+Write-Host '    3. cd PuffinZipAI && bash start.sh'
 Write-Host '============================================================'

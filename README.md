@@ -38,14 +38,18 @@ pip install -r requirements.txt
 ### 2. Launch the Web UI (recommended)
 
 ```bash
-# Windows
-scripts\run_webui_windows.bat
+# Windows (from repo root)
+start.bat
 
-# Linux / macOS
-scripts/run_webui.sh
+# Linux / macOS (from repo root)
+bash start.sh
 ```
 
-Open **http://localhost:5001** (Windows) or **http://localhost:5000** (Linux/macOS).
+The universal launcher auto-detects your hardware (CPU, RAM, GPU) and configures
+PuffinZipAI accordingly. Run presets (Test / Medium / Max) are available in the
+WebUI dashboard.
+
+Open **http://localhost:5001** after the server starts.
 
 ### 3. Or use the Tkinter GUI
 

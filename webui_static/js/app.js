@@ -20,6 +20,7 @@ class PuffinZipAIApp {
         this.startLoops();
         this.loadCompressionMethods();
         this.loadSystemDefaults();
+        this.loadHardwareProfile();
     }
 
     /** Fetch system limits and pre-fill form defaults */
@@ -33,6 +34,72 @@ class PuffinZipAIApp {
                 wEl.value = lim.default_workers;
             }
         } catch (_) {}
+    }
+
+    /** Fetch hardware profile + run presets and wire up preset buttons */
+    async loadHardwareProfile() {
+        try {
+            const res = await fetch('/api/hardware-profile');
+            const d = await res.json();
+            this._presets = d.presets || {};
+            const hw = d.hardware || {};
+
+            // Show hardware info chips
+            const hwRow = document.getElementById('hw-info-row');
+            if (hwRow) {
+                const gpuChip = document.getElementById('hw-chip-gpu');
+                const ramChip = document.getElementById('hw-chip-ram');
+                const cpuChip = document.getElementById('hw-chip-cpu');
+                if (gpuChip) gpuChip.textContent = hw.has_gpu
+                    ? `🖥 ${hw.gpu_count}× ${hw.gpu_name} (${hw.gpu_vram_gb}GB)`
+                    : '🖥 CPU only';
+                if (ramChip) ramChip.textContent = `💾 ${hw.ram_gb} GB RAM`;
+                if (cpuChip) cpuChip.textContent = `⚙ ${hw.cpu_cores} cores`;
+                hwRow.style.display = 'flex';
+            }
+
+            // Wire preset buttons
+            const btnTest = document.getElementById('preset-test');
+            const btnMed = document.getElementById('preset-medium');
+            const btnMax = document.getElementById('preset-max');
+
+            const applyPreset = (key, btn) => {
+                const preset = this._presets[key];
+                if (!preset) return;
+                // Remove active class from all preset buttons
+                document.querySelectorAll('.btn-preset').forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+                // Apply values
+                const q = id => document.getElementById(id);
+                if (q('generations')) q('generations').value = preset.num_generations;
+                if (q('population-size')) q('population-size').value = preset.population_size;
+                if (q('batch-size')) q('batch-size').value = preset.batch_size;
+                if (q('cpu-workers')) q('cpu-workers').value = preset.cpu_workers;
+                if (q('device-select')) q('device-select').value = preset.target_device;
+                if (q('infinite-generations')) q('infinite-generations').checked = !!preset.infinite;
+                // Show description
+                const desc = document.getElementById('preset-description');
+                if (desc) desc.textContent = preset.description || '';
+            };
+
+            if (btnTest) btnTest.addEventListener('click', () => applyPreset('test', btnTest));
+            if (btnMed)  btnMed.addEventListener('click',  () => applyPreset('medium', btnMed));
+            if (btnMax)  btnMax.addEventListener('click',  () => applyPreset('max', btnMax));
+
+            // Clear active preset state when user manually changes any config field
+            const configInputs = ['generations', 'population-size', 'batch-size', 'cpu-workers', 'device-select', 'infinite-generations'];
+            configInputs.forEach(id => {
+                const el = document.getElementById(id);
+                if (el) el.addEventListener('input', () => {
+                    document.querySelectorAll('.btn-preset').forEach(b => b.classList.remove('active'));
+                    const desc = document.getElementById('preset-description');
+                    if (desc) desc.textContent = '';
+                });
+            });
+
+        } catch (e) {
+            console.warn('Failed to load hardware profile:', e);
+        }
     }
 
      /* ------------------------------------------------------------------

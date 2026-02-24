@@ -1,28 +1,26 @@
 #!/usr/bin/env bash
 # ============================================================================
-#  PuffinZipAI — A100 PCIe Pod Launcher (Multi-GPU + Multi-CPU)
+#  PuffinZipAI — Universal Launcher (Linux / macOS)
 #
-#  Self-contained: copy this file to any Linux system with Python 3.10+ and
-#  run it.  It will clone the repo, set up a venv, install deps, and start
-#  the WebUI — all in one command.
+#  Auto-detects hardware (CPU, RAM, GPU type & VRAM) and configures the
+#  WebUI accordingly.  Works on any system — from laptops to A100/H100 pods.
 #
-#  A100 PCIe — 40/80 GB VRAM, 312 TFLOPS TF32, 624 TFLOPS FP16 (w/ sparsity)
-#  Recommended session: ≤7 hours (enough for 2 full training runs).
-#
-#  Console stays open for live logs & debugging.
+#  Self-contained: will clone the repo, create a venv, install deps, generate
+#  credentials, and start the WebUI — all in one command.
 #
 #  Environment variables (all optional):
-#    PUFFIN_PORT          WebUI port              (default: 5001)
-#    PUFFIN_HOST          Bind address             (default: 0.0.0.0)
-#    PUFFIN_WORKERS       CPU worker count         (default: auto = cores - 1)
-#    PUFFIN_GPUS          Comma-separated GPU IDs  (default: all available)
-#    PUFFIN_CACHE_MAX_MB  GitHub cache limit in MB (default: 200)
-#    PUFFIN_CACHE_MAX_FILES  Max cached files      (default: 500)
-#    PUFFIN_USERNAME      WebUI login username     (prompted if not set)
-#    PUFFIN_PASSWORD      WebUI login password     (prompted if not set)
-#    GITHUB_TOKEN         GitHub API token         (optional, higher rate limits)
-#    PUFFIN_REPO_URL      Override repo clone URL
-#    PUFFIN_REPO_BRANCH   Branch to checkout       (default: main)
+#    PUFFIN_PORT            WebUI port              (default: 5001)
+#    PUFFIN_HOST            Bind address             (default: 0.0.0.0)
+#    PUFFIN_WORKERS         CPU worker count         (default: auto)
+#    PUFFIN_GPUS            Comma-separated GPU IDs  (default: all available)
+#    PUFFIN_CACHE_MAX_MB    GitHub cache limit in MB (default: 200)
+#    PUFFIN_CACHE_MAX_FILES Max cached files         (default: 500)
+#    GITHUB_TOKEN           GitHub API token         (optional, higher rate limits)
+#    PUFFIN_USERNAME        Override WebUI login username
+#    PUFFIN_PASSWORD        Override WebUI login password
+#    PUFFIN_SECRET_KEY      Override Flask secret key
+#    PUFFIN_REPO_URL        Override repo clone URL
+#    PUFFIN_REPO_BRANCH     Branch to checkout       (default: main)
 # ============================================================================
 set -euo pipefail
 
@@ -44,11 +42,11 @@ banner() {
 cat << 'EOF'
 
   ╔══════════════════════════════════════════════════════════╗
-  ║             🐧  PuffinZipAI  v0.9.7                     ║
-  ║    A100 PCIe · Multi-GPU · Multi-CPU · DQN Neural Agents║
+  ║              🐧  PuffinZipAI  v0.9.8                    ║
+  ║     Universal Launcher · Auto Hardware Detection        ║
   ╠══════════════════════════════════════════════════════════╣
-  ║  WebUI will start on the port shown below.               ║
-  ║  This console stays open for logs & debugging.           ║
+  ║  Hardware is auto-detected and run presets (Test /       ║
+  ║  Medium / Max) are available in the WebUI dashboard.     ║
   ║  Press Ctrl+C to stop the server.                        ║
   ╚══════════════════════════════════════════════════════════╝
 
@@ -60,12 +58,13 @@ warn() { echo -e "${YELLOW}[!]${NC} $*"; }
 err()  { echo -e "${RED}[✗]${NC} $*"; }
 info() { echo -e "${CYAN}[i]${NC} $*"; }
 
-# ── 0. Clone repo if needed ─────────────────────────────────────────────────
-# Detect project directory: if this script lives inside scripts/, use parent.
-# Otherwise (standalone copy), clone into ./PuffinZipAI beside the script.
-if [[ -f "$SCRIPT_DIR/../puffinzip_ai/__init__.py" ]]; then
+# ── 0. Locate or clone project ──────────────────────────────────────────────
+# If this script lives inside the project root (presence of puffinzip_ai/), use it.
+# If it lives inside scripts/, use parent.  Otherwise clone beside the script.
+if [[ -f "$SCRIPT_DIR/puffinzip_ai/__init__.py" ]]; then
+    PROJECT_DIR="$SCRIPT_DIR"
+elif [[ -f "$SCRIPT_DIR/../puffinzip_ai/__init__.py" ]]; then
     PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-    log "Project found at ${BOLD}$PROJECT_DIR${NC}"
 else
     PROJECT_DIR="$SCRIPT_DIR/PuffinZipAI"
     if [[ ! -d "$PROJECT_DIR" ]]; then
@@ -105,54 +104,51 @@ fi
 PY_VER=$("$PYTHON" --version 2>&1)
 log "Found $PY_VER ($PYTHON)"
 
-# ── GPU detection (multi-GPU) ───────────────────────────────────────────────
+# ── Hardware detection — GPU ────────────────────────────────────────────────
 GPU_COUNT=0
-HAS_A100=false
+GPU_NAME="None"
+GPU_VRAM_MB=0
+
 if command -v nvidia-smi &>/dev/null; then
-    # Count all available GPUs
     GPU_COUNT=$(nvidia-smi --query-gpu=count --format=csv,noheader,nounits 2>/dev/null | head -1 || echo 0)
-    GPU_COUNT=${GPU_COUNT// /}  # trim whitespace
+    GPU_COUNT=${GPU_COUNT// /}
 
     if [[ "$GPU_COUNT" -gt 0 ]]; then
         echo ""
         info "Detected ${BOLD}$GPU_COUNT GPU(s)${NC}:"
         nvidia-smi --query-gpu=index,name,memory.total --format=csv,noheader 2>/dev/null | while IFS= read -r line; do
             echo -e "    ${CYAN}→${NC} GPU $line"
-            if echo "$line" | grep -qi "A100"; then
-                HAS_A100=true
-            fi
         done
 
-        # Verify A100 presence
-        GPU_NAMES=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null || echo "")
-        if echo "$GPU_NAMES" | grep -qi "A100"; then
-            HAS_A100=true
-        fi
-        if [[ "$HAS_A100" != "true" ]]; then
-            warn "Expected A100 but found: $(echo "$GPU_NAMES" | head -1) — script will still work"
-        fi
+        # Capture first GPU name and VRAM for hardware profile
+        GPU_NAME=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1 | xargs)
+        GPU_VRAM_MB=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | head -1 | xargs)
 
-        # Set CUDA_VISIBLE_DEVICES — use PUFFIN_GPUS if set, else all GPUs
+        # Set CUDA_VISIBLE_DEVICES
         if [[ -n "${PUFFIN_GPUS:-}" ]]; then
             export CUDA_VISIBLE_DEVICES="$PUFFIN_GPUS"
             info "Using GPUs (from PUFFIN_GPUS): ${BOLD}$CUDA_VISIBLE_DEVICES${NC}"
         else
-            # Build comma-separated list: 0,1,2,...
             ALL_GPU_IDS=$(nvidia-smi --query-gpu=index --format=csv,noheader,nounits 2>/dev/null | tr '\n' ',' | sed 's/,$//')
             export CUDA_VISIBLE_DEVICES="$ALL_GPU_IDS"
             info "Using all GPUs: ${BOLD}$CUDA_VISIBLE_DEVICES${NC}"
         fi
     else
-        warn "nvidia-smi found but no GPUs detected — running in CPU-only mode"
+        warn "nvidia-smi found but no GPUs detected — CPU-only mode"
     fi
 else
-    warn "nvidia-smi not found — running in CPU-only mode"
+    warn "nvidia-smi not found — CPU-only mode"
 fi
+
+# ── Hardware detection — CPU & RAM ──────────────────────────────────────────
+CPU_CORES=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
+RAM_MB=$(free -m 2>/dev/null | awk '/^Mem:/{print $2}' || echo 8192)
+RAM_GB=$(( RAM_MB / 1024 ))
+
+info "CPU cores: ${BOLD}$CPU_CORES${NC} | RAM: ${BOLD}${RAM_GB} GB${NC}"
 
 # ── CPU worker auto-detection ───────────────────────────────────────────────
 if [[ "$WORKERS" == "0" ]]; then
-    CPU_CORES=$(nproc 2>/dev/null || echo 4)
-    # Use N-1 cores (leave 1 for system), min 2
     WORKERS=$(( CPU_CORES > 2 ? CPU_CORES - 1 : 2 ))
     info "Auto-detected $CPU_CORES CPU cores → using ${BOLD}$WORKERS workers${NC}"
 fi
@@ -161,6 +157,13 @@ fi
 export PUFFIN_CACHE_MAX_MB="$CACHE_MAX_MB"
 export PUFFIN_CACHE_MAX_FILES="$CACHE_MAX_FILES"
 info "GitHub cache limits: ${BOLD}${CACHE_MAX_MB} MB / ${CACHE_MAX_FILES} files${NC} (LRU eviction)"
+
+# ── Export hardware profile for the WebUI server ────────────────────────────
+export PUFFIN_HW_GPU_COUNT="$GPU_COUNT"
+export PUFFIN_HW_GPU_NAME="$GPU_NAME"
+export PUFFIN_HW_GPU_VRAM_MB="$GPU_VRAM_MB"
+export PUFFIN_HW_CPU_CORES="$CPU_CORES"
+export PUFFIN_HW_RAM_MB="$RAM_MB"
 
 # ── 2. Virtual environment ──────────────────────────────────────────────────
 cd "$PROJECT_DIR"
@@ -171,36 +174,30 @@ if [[ ! -d "$VENV_DIR" ]]; then
     log "Virtual environment created at $VENV_DIR"
 fi
 
-# Activate
 # shellcheck disable=SC1091
 source "$VENV_DIR/bin/activate"
 log "Activated venv ($(python --version))"
 
 # ── 3. Install dependencies ─────────────────────────────────────────────────
 _need_install=0
-
-# Quick check: can we import the critical packages?
 python -c "import flask, flask_cors, numpy, psutil, torch" 2>/dev/null || _need_install=1
 
 if [[ "$_need_install" == "1" ]]; then
     info "Installing dependencies (first run)..."
-
-    # Upgrade pip
     python -m pip install --upgrade pip -q
 
-    # Core deps (always needed)
+    # Core deps
     python -m pip install flask flask-cors numpy psutil requests matplotlib -q
     log "Core packages installed"
 
     # PyTorch — detect CUDA version and install matching torch
     if command -v nvidia-smi &>/dev/null && [[ "$GPU_COUNT" -gt 0 ]]; then
         info "Installing PyTorch with CUDA support..."
-        # PyTorch 2.x with CUDA 12.x (covers A40, A100, H100, 4090, etc.)
         python -m pip install torch --index-url https://download.pytorch.org/whl/cu121 -q 2>/dev/null \
-            || python -m pip install torch -q  # fallback to default
+            || python -m pip install torch -q
         log "PyTorch installed (CUDA)"
 
-        # CuPy for GPU RLE (optional, non-fatal)
+        # CuPy for GPU RLE (optional)
         python -m pip install cupy-cuda12x -q 2>/dev/null && log "CuPy installed" \
             || warn "CuPy install failed (optional — GPU RLE disabled)"
     else
@@ -233,8 +230,6 @@ if torch.cuda.is_available():
         name = torch.cuda.get_device_name(i)
         vram = torch.cuda.get_device_properties(i).total_mem / 1024**3
         print(f'    GPU {i}: {name} ({vram:.1f} GB VRAM)')
-        if vram >= 38:
-            print(f'    A100 VRAM OK — plenty of room for large populations')
 else:
     print('  No CUDA GPUs visible to PyTorch')
 
@@ -264,17 +259,19 @@ echo -e "${BOLD}  Starting PuffinZipAI WebUI${NC}"
 echo -e "  ${CYAN}URL:${NC}      ${BOLD}http://$HOST:$PORT${NC}"
 echo -e "  ${CYAN}Workers:${NC}  ${BOLD}$WORKERS CPU workers${NC}"
 if [[ "$GPU_COUNT" -gt 0 ]]; then
-echo -e "  ${CYAN}GPUs:${NC}     ${BOLD}$GPU_COUNT × A100 PCIe (CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES)${NC}"
+echo -e "  ${CYAN}GPUs:${NC}     ${BOLD}$GPU_COUNT × $GPU_NAME ($((GPU_VRAM_MB / 1024)) GB VRAM each)${NC}"
 else
 echo -e "  ${CYAN}GPUs:${NC}     ${BOLD}None (CPU-only mode)${NC}"
 fi
+echo -e "  ${CYAN}RAM:${NC}      ${BOLD}${RAM_GB} GB${NC}"
+echo -e "  ${CYAN}CPU:${NC}      ${BOLD}${CPU_CORES} cores${NC}"
 echo -e "  ${CYAN}Cache:${NC}    ${BOLD}${CACHE_MAX_MB} MB / ${CACHE_MAX_FILES} files max (LRU eviction)${NC}"
 echo -e "  ${CYAN}Auth:${NC}     ${BOLD}Enabled (credentials in webui_credentials.json)${NC}"
 echo -e "  ${CYAN}Console:${NC}  Live logs below — Ctrl+C to stop"
 echo -e "${BOLD}════════════════════════════════════════════════════════════${NC}"
 echo ""
 
-# ── Ensure credentials file exists (auto-generates on first run) ────────────
+# ── Ensure credentials ──────────────────────────────────────────────────────
 info "Ensuring WebUI credentials..."
 python -c "
 from webui_credentials_manager import load_or_create_credentials, _CREDENTIALS_FILE
@@ -289,5 +286,5 @@ echo ""
 # Export worker count so the WebUI can suggest it as default
 export PUFFIN_DEFAULT_WORKERS="$WORKERS"
 
-# Run with console output (no backgrounding, no nohup)
+# Run with console output
 exec python webui_server.py --host "$HOST" --port "$PORT"
