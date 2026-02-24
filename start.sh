@@ -490,21 +490,214 @@ echo -e "  ${CYAN}Console:${NC}  Live logs below — Ctrl+C to stop"
 echo -e "${BOLD}════════════════════════════════════════════════════════════${NC}"
 echo ""
 
-# ── Cloudflare Tunnel (auto-detect and start) ────────────────────────────────
+# ── Cloudflare Tunnel (auto-install + auto-start) ────────────────────────────
+#
+# Supports three methods (tried in order):
+#   1. CLOUDFLARE_TUNNEL_TOKEN env var  — remotely-managed, simplest for pods
+#   2. CLOUDFLARE_TUNNEL_CREDS env var  — base64 credentials JSON → dynamic config
+#   3. Local ~/.cloudflared/ credentials — existing local setup
+#
 TUNNEL_PID=""
-if command -v cloudflared &>/dev/null; then
-    if cloudflared tunnel list 2>/dev/null | grep -qi "puffinzipai"; then
-        info "Cloudflare Tunnel detected — starting tunnel..."
-        cloudflared tunnel run puffinzipai &>/dev/null &
-        TUNNEL_PID=$!
-        info "Tunnel 'puffinzipai' started (PID $TUNNEL_PID)"
-    else
-        log "cloudflared found but no 'puffinzipai' tunnel configured"
-        log "See docs/CLOUDFLARE_TUNNEL_GUIDE.md for setup instructions"
+_TUNNEL_NAME="${CLOUDFLARE_TUNNEL_NAME:-puffinzipai}"
+_WANT_TUNNEL=0
+if [[ -n "$CUSTOM_URL" || -n "${CLOUDFLARE_TUNNEL_TOKEN:-}" || -n "${CLOUDFLARE_TUNNEL_CREDS:-}" ]]; then
+    _WANT_TUNNEL=1
+fi
+
+if [[ "$_WANT_TUNNEL" == "1" ]]; then
+    # ── Auto-install cloudflared on Linux ──────────────────────────────────
+    if ! command -v cloudflared &>/dev/null; then
+        if [[ "$(uname -s)" == "Linux" ]]; then
+            info "cloudflared not found — installing..."
+            _CF_ARCH="amd64"
+            case "$(uname -m)" in
+                aarch64|arm64) _CF_ARCH="arm64" ;;
+                armv7l)        _CF_ARCH="arm"   ;;
+            esac
+            _CF_OK=0
+            # Try .deb package first (Debian/Ubuntu)
+            if command -v dpkg &>/dev/null; then
+                _CF_DEB="/tmp/cloudflared-linux-${_CF_ARCH}.deb"
+                if curl -fsSL "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${_CF_ARCH}.deb" -o "$_CF_DEB" 2>/dev/null; then
+                    if dpkg -i "$_CF_DEB" 2>/dev/null || sudo dpkg -i "$_CF_DEB" 2>/dev/null; then
+                        _CF_OK=1
+                    fi
+                fi
+                rm -f "$_CF_DEB" 2>/dev/null
+            fi
+            # Fallback: standalone binary
+            if [[ "$_CF_OK" == "0" ]]; then
+                _CF_BIN="/tmp/cloudflared-linux-${_CF_ARCH}"
+                if curl -fsSL "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${_CF_ARCH}" -o "$_CF_BIN" 2>/dev/null; then
+                    chmod +x "$_CF_BIN"
+                    if mv "$_CF_BIN" /usr/local/bin/cloudflared 2>/dev/null \
+                       || sudo mv "$_CF_BIN" /usr/local/bin/cloudflared 2>/dev/null; then
+                        _CF_OK=1
+                    else
+                        # No sudo — put it in the project dir
+                        cp "$_CF_BIN" "$PROJECT_DIR/cloudflared" && chmod +x "$PROJECT_DIR/cloudflared"
+                        _CF_OK=1
+                    fi
+                fi
+                rm -f "$_CF_BIN" 2>/dev/null
+            fi
+            if [[ "$_CF_OK" == "1" ]]; then
+                log "cloudflared installed"
+            else
+                warn "Failed to install cloudflared — tunnel will not start"
+            fi
+        elif [[ "$(uname -s)" == "Darwin" ]]; then
+            if command -v brew &>/dev/null; then
+                info "Installing cloudflared via Homebrew..."
+                brew install cloudflare/cloudflare/cloudflared 2>/dev/null \
+                    && log "cloudflared installed" \
+                    || warn "Failed to install cloudflared"
+            else
+                warn "Install cloudflared: brew install cloudflare/cloudflare/cloudflared"
+            fi
+        fi
     fi
-elif [[ -n "$CUSTOM_URL" ]]; then
-    log "Install cloudflared to expose this server at $CUSTOM_URL"
-    log "See docs/CLOUDFLARE_TUNNEL_GUIDE.md for setup instructions"
+
+    # Add project-local binary to PATH if present
+    if [[ -x "$PROJECT_DIR/cloudflared" ]]; then
+        export PATH="$PROJECT_DIR:$PATH"
+    fi
+
+    # ── Start tunnel ──────────────────────────────────────────────────────
+    _TUNNEL_STARTED=0
+
+    if command -v cloudflared &>/dev/null; then
+        # — Method 1: Token-based (remotely-managed tunnel) ——————————————
+        # Ingress is configured in Cloudflare Zero Trust dashboard.
+        # Get token: cloudflared tunnel token <name>  (on a machine with creds)
+        if [[ -n "${CLOUDFLARE_TUNNEL_TOKEN:-}" && "$_TUNNEL_STARTED" == "0" ]]; then
+            info "Starting Cloudflare Tunnel (token)..."
+            cloudflared tunnel run --token "$CLOUDFLARE_TUNNEL_TOKEN" &>/dev/null &
+            TUNNEL_PID=$!
+            sleep 3
+            if kill -0 "$TUNNEL_PID" 2>/dev/null; then
+                log "Tunnel started (PID $TUNNEL_PID) — token-based"
+                _TUNNEL_STARTED=1
+            else
+                warn "Tunnel failed with token — verify CLOUDFLARE_TUNNEL_TOKEN"
+                TUNNEL_PID=""
+            fi
+        fi
+
+        # — Method 2: Base64 credentials env var → dynamic config ————————
+        # Set CLOUDFLARE_TUNNEL_CREDS to the base64-encoded contents of
+        # ~/.cloudflared/<tunnel-id>.json (from the machine that created it).
+        # Generates config.yml dynamically with the actual PORT, so the tunnel
+        # always points to the right local port regardless of environment.
+        if [[ -n "${CLOUDFLARE_TUNNEL_CREDS:-}" && "$_TUNNEL_STARTED" == "0" ]]; then
+            _CF_DIR="$HOME/.cloudflared"
+            mkdir -p "$_CF_DIR"
+            _TUNNEL_ID=$(echo "$CLOUDFLARE_TUNNEL_CREDS" | base64 -d 2>/dev/null \
+                | python3 -c "import sys,json; print(json.load(sys.stdin).get('TunnelID',''))" 2>/dev/null || echo "")
+            if [[ -n "$_TUNNEL_ID" ]]; then
+                _CREDS_FILE="$_CF_DIR/${_TUNNEL_ID}.json"
+                echo "$CLOUDFLARE_TUNNEL_CREDS" | base64 -d > "$_CREDS_FILE" 2>/dev/null
+
+                # Derive hostname from CUSTOM_URL
+                _TUNNEL_HOST=$(python3 -c "
+from urllib.parse import urlparse
+u='$CUSTOM_URL'
+u = u if '://' in u else 'https://'+u
+p = urlparse(u)
+print(p.hostname or u.split('/')[0])
+" 2>/dev/null || echo "$CUSTOM_URL")
+
+                # Generate dynamic config.yml with current PORT
+                _DYN_CFG="$PROJECT_DIR/.cloudflared/config.yml"
+                mkdir -p "$(dirname "$_DYN_CFG")"
+                cat > "$_DYN_CFG" <<CFEOF
+tunnel: $_TUNNEL_ID
+credentials-file: $_CREDS_FILE
+
+ingress:
+  - hostname: $_TUNNEL_HOST
+    service: http://localhost:$PORT
+  - service: http_status:404
+CFEOF
+                info "Generated tunnel config → localhost:$PORT → $_TUNNEL_HOST"
+                cloudflared tunnel --config "$_DYN_CFG" run &>/dev/null &
+                TUNNEL_PID=$!
+                sleep 3
+                if kill -0 "$TUNNEL_PID" 2>/dev/null; then
+                    log "Tunnel started (PID $TUNNEL_PID) — https://$_TUNNEL_HOST"
+                    _TUNNEL_STARTED=1
+                else
+                    warn "Tunnel failed — check CLOUDFLARE_TUNNEL_CREDS"
+                    TUNNEL_PID=""
+                fi
+            else
+                warn "Could not decode CLOUDFLARE_TUNNEL_CREDS — invalid base64 or missing TunnelID"
+            fi
+        fi
+
+        # — Method 3: Local credentials (existing setup) —————————————————
+        if [[ "$_TUNNEL_STARTED" == "0" ]]; then
+            # Check for existing credentials in ~/.cloudflared/
+            _CF_DIR="$HOME/.cloudflared"
+            _CREDS_FILE=""
+            _TUNNEL_ID=""
+            for f in "$_CF_DIR"/*.json; do
+                [[ -f "$f" ]] || continue
+                _tid=$(python3 -c "import json; print(json.load(open('$f')).get('TunnelID',''))" 2>/dev/null || echo "")
+                if [[ -n "$_tid" ]]; then
+                    _TUNNEL_ID="$_tid"
+                    _CREDS_FILE="$f"
+                    break
+                fi
+            done
+
+            if [[ -n "$_CREDS_FILE" ]]; then
+                # Generate dynamic config.yml with current PORT
+                _TUNNEL_HOST=$(python3 -c "
+from urllib.parse import urlparse
+u='$CUSTOM_URL'
+u = u if '://' in u else 'https://'+u
+p = urlparse(u)
+print(p.hostname or u.split('/')[0])
+" 2>/dev/null || echo "$CUSTOM_URL")
+
+                _DYN_CFG="$PROJECT_DIR/.cloudflared/config.yml"
+                mkdir -p "$(dirname "$_DYN_CFG")"
+                cat > "$_DYN_CFG" <<CFEOF
+tunnel: $_TUNNEL_ID
+credentials-file: $_CREDS_FILE
+
+ingress:
+  - hostname: $_TUNNEL_HOST
+    service: http://localhost:$PORT
+  - service: http_status:404
+CFEOF
+                info "Generated tunnel config → localhost:$PORT → $_TUNNEL_HOST"
+                cloudflared tunnel --config "$_DYN_CFG" run &>/dev/null &
+                TUNNEL_PID=$!
+                sleep 3
+                if kill -0 "$TUNNEL_PID" 2>/dev/null; then
+                    log "Tunnel started (PID $TUNNEL_PID) — https://$_TUNNEL_HOST"
+                    _TUNNEL_STARTED=1
+                else
+                    warn "Tunnel failed to start — check credentials"
+                    TUNNEL_PID=""
+                fi
+            fi
+        fi
+
+        # — No method succeeded ——————————————————————————————————————————
+        if [[ "$_TUNNEL_STARTED" == "0" ]]; then
+            warn "cloudflared installed but no tunnel credentials available"
+            log "  Option A: set CLOUDFLARE_TUNNEL_TOKEN in .env (simplest)"
+            log "  Option B: set CLOUDFLARE_TUNNEL_CREDS in .env (base64 credentials)"
+            log "  See docs/CLOUDFLARE_TUNNEL_GUIDE.md"
+        fi
+    else
+        warn "cloudflared not available — tunnel will not start"
+        log "Set CLOUDFLARE_TUNNEL_TOKEN in .env to enable tunnel"
+        log "See docs/CLOUDFLARE_TUNNEL_GUIDE.md"
+    fi
 fi
 
 # Cleanup tunnel on exit

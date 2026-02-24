@@ -313,6 +313,25 @@ echo.
 
 REM ── Cloudflare Tunnel (auto-detect and start) ────────────────────────────
 set "TUNNEL_STARTED=0"
+
+REM Method 1: Token-based (CLOUDFLARE_TUNNEL_TOKEN env var)
+if defined CLOUDFLARE_TUNNEL_TOKEN (
+    if not "!CLOUDFLARE_TUNNEL_TOKEN!"=="" (
+        where cloudflared >nul 2>&1
+        if !errorlevel! equ 0 (
+            echo [i] Starting Cloudflare Tunnel ^(token^)...
+            start "" /b cloudflared tunnel run --token "!CLOUDFLARE_TUNNEL_TOKEN!" >nul 2>&1
+            set "TUNNEL_STARTED=1"
+            echo [OK] Tunnel started ^(token-based^)
+            goto :TUNNEL_DONE
+        ) else (
+            echo [!] CLOUDFLARE_TUNNEL_TOKEN set but cloudflared not found
+            echo     Install: winget install Cloudflare.cloudflared
+        )
+    )
+)
+
+REM Method 2: Local credentials (existing setup)
 where cloudflared >nul 2>&1
 if !errorlevel! neq 0 goto :NO_CLOUDFLARED
 
