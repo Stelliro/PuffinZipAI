@@ -228,7 +228,7 @@ if torch.cuda.is_available():
     print(f'  GPUs available to PyTorch: {gpu_count}')
     for i in range(gpu_count):
         name = torch.cuda.get_device_name(i)
-        vram = torch.cuda.get_device_properties(i).total_mem / 1024**3
+        vram = torch.cuda.get_device_properties(i).total_memory / 1024**3
         print(f'    GPU {i}: {name} ({vram:.1f} GB VRAM)')
 else:
     print('  No CUDA GPUs visible to PyTorch')

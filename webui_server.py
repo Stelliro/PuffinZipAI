@@ -77,7 +77,7 @@ def _build_hardware_profile():
                 gpu_count = torch.cuda.device_count()
                 if gpu_count > 0:
                     gpu_name = torch.cuda.get_device_name(0)
-                    gpu_vram_mb = int(torch.cuda.get_device_properties(0).total_mem / (1024 * 1024))
+                    gpu_vram_mb = int(torch.cuda.get_device_properties(0).total_memory / (1024 * 1024))
         except Exception:
             pass
 
