@@ -20,12 +20,46 @@ REM   PUFFIN_CACHE_MAX_FILES Max cached files      (default: 500)
 REM   PUFFIN_USERNAME        Override login username
 REM   PUFFIN_PASSWORD        Override login password
 REM   PUFFIN_SECRET_KEY      Override Flask secret key
+REM   PUFFIN_ADMIN_USERNAME  Admin/remote login username
+REM   PUFFIN_ADMIN_PASSWORD  Admin/remote login password
+REM   PUFFIN_CUSTOM_URL      Custom URL shown in banner
 REM ============================================================================
 setlocal enabledelayedexpansion
 title PuffinZipAI — Universal Launcher
 
-REM Navigate to project root (script lives at repo root)
-cd /d "%~dp0"
+REM ── Detect project root ───────────────────────────────────────────────────
+REM Case 1: Script lives at the project root (puffinzip_ai/ is here)
+REM Case 2: Script is in scripts/ inside the project
+REM Case 3: Script is outside the project
+set "SCRIPT_DIR=%~dp0"
+set "PROJECT_DIR="
+
+if exist "%SCRIPT_DIR%puffinzip_ai\__init__.py" (
+    set "PROJECT_DIR=%SCRIPT_DIR%"
+    echo [i] Running from project root
+) else if exist "%SCRIPT_DIR%..\puffinzip_ai\__init__.py" (
+    pushd "%SCRIPT_DIR%.."
+    set "PROJECT_DIR=!CD!\"
+    popd
+    echo [i] Running from scripts\ — project root: !PROJECT_DIR!
+) else (
+    echo [!] Script is outside the PuffinZipAI project directory.
+    echo [!] Please run start.bat from the PuffinZipAI root folder.
+    pause
+    exit /b 1
+)
+
+cd /d "!PROJECT_DIR!"
+
+REM ── Load .env (local-only config, git-ignored) ───────────────────────────
+if exist ".env" (
+    echo [i] Loading .env config...
+    for /f "usebackq eol=# tokens=1,* delims==" %%a in (".env") do (
+        if not "%%a"=="" if not "%%b"=="" (
+            set "%%a=%%b"
+        )
+    )
+)
 
 echo.
 echo  ========================================================
@@ -197,6 +231,21 @@ for /d /r "." %%d in (__pycache__) do (
 REM ── Detect connect URL (RunPod proxy / public IP / local) ────────────────
 set "CONNECT_URL="
 set "PLATFORM="
+set "CUSTOM_URL="
+
+REM Read custom_url from credentials file (if it exists)
+if not defined PUFFIN_CUSTOM_URL (
+    for /f "usebackq delims=" %%u in (`%PYTHON_EXE% -c "from webui_credentials_manager import load_or_create_credentials; c = load_or_create_credentials(); print(c.get('custom_url',''))" 2^>nul`) do (
+        if not "%%u"=="" set "CUSTOM_URL=%%u"
+    )
+) else (
+    set "CUSTOM_URL=!PUFFIN_CUSTOM_URL!"
+)
+
+REM Check admin credentials status
+set "ADMIN_ENABLED=0"
+for /f "usebackq delims=" %%a in (`%PYTHON_EXE% -c "from webui_credentials_manager import load_or_create_credentials; c = load_or_create_credentials(); print('1' if c.get('admin_username','').strip() and c.get('admin_password','').strip() else '0')" 2^>nul`) do set "ADMIN_ENABLED=%%a"
+
 if defined RUNPOD_POD_ID (
     set "PLATFORM=RunPod"
     set "CONNECT_URL=https://!RUNPOD_POD_ID!-!PUFFIN_PORT!.proxy.runpod.net"
@@ -235,6 +284,16 @@ echo   RAM:      !RAM_GB! GB
 echo   CPU:      !CPU_CORES! cores
 echo   Cache:    !PUFFIN_CACHE_MAX_MB! MB / !PUFFIN_CACHE_MAX_FILES! files max
 echo   Auth:     Enabled ^(credentials in webui_credentials.json^)
+if "!ADMIN_ENABLED!"=="1" (
+    echo   Admin:    Enabled ^(remote-access login active^)
+) else (
+    echo   Admin:    Disabled ^(set admin_username/admin_password in credentials file^)
+)
+if defined CUSTOM_URL (
+    if not "!CUSTOM_URL!"=="" (
+        echo   Website:  !CUSTOM_URL!
+    )
+)
 if "!PUFFIN_HOST!"=="0.0.0.0" (
     echo   Access:   Public ^(network-accessible^)
 ) else (

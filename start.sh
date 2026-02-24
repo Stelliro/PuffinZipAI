@@ -105,14 +105,19 @@ err()  { echo -e "${RED}[✗]${NC} $*"; }
 info() { echo -e "${CYAN}[i]${NC} $*"; }
 
 # ── 0. Locate or clone project ──────────────────────────────────────────────
-# If this script lives inside the project root (presence of puffinzip_ai/), use it.
-# If it lives inside scripts/, use parent.  Otherwise clone beside the script.
+# Detect where we are relative to the project root.
+# Case 1: Script lives at the project root (start.sh is in PuffinZipAI/)
+# Case 2: Script lives in scripts/ inside the project
+# Case 3: Script is outside the project → clone beside it
 if [[ -f "$SCRIPT_DIR/puffinzip_ai/__init__.py" ]]; then
     PROJECT_DIR="$SCRIPT_DIR"
+    info "Running from project root: ${BOLD}$PROJECT_DIR${NC}"
 elif [[ -f "$SCRIPT_DIR/../puffinzip_ai/__init__.py" ]]; then
     PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+    info "Running from scripts/ — project root: ${BOLD}$PROJECT_DIR${NC}"
 else
     PROJECT_DIR="$SCRIPT_DIR/PuffinZipAI"
+    info "Script is outside project directory"
     if [[ ! -d "$PROJECT_DIR" ]]; then
         info "Project not found — cloning from ${BOLD}$REPO_URL${NC} ..."
         if ! command -v git &>/dev/null; then
