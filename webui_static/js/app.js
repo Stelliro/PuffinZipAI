@@ -13,6 +13,7 @@ class PuffinZipAIApp {
         this.popPage = 1;
         this.popTotalPages = 1;
         this.popExpandedGens = new Set();  // Track which generations are expanded
+        this.runQueue = [];                    // Run queue steps [{gens, sizeKb, cpxPct, label}]
         this.init();
     }
 
@@ -24,6 +25,7 @@ class PuffinZipAIApp {
         this.loadCompressionMethods();
         this.loadSystemDefaults();
         this.loadHardwareProfile();
+        this._rqRender();
     }
 
     /** Fetch system limits and pre-fill form defaults */
@@ -106,7 +108,9 @@ class PuffinZipAIApp {
     }
 
      /* ------------------------------------------------------------------
-         Chart — 3 datasets: Compression Rate, Benchmark Size, Complexity Value
+         Chart — 4 datasets: Compression Rate, Benchmark Size, Complexity
+         Value, and Corruption Value (the two independent progression tracks
+         share the y3 0-100 axis).
          ------------------------------------------------------------------ */
     initChart() {
         const ctx = document.getElementById('fitnessChart');
@@ -143,6 +147,14 @@ class PuffinZipAIApp {
                         backgroundColor: 'rgba(251,191,36,0.08)',
                         tension: 0.3, borderWidth: 1.5, pointRadius: 0,
                         fill: true, yAxisID: 'y3'
+                    },
+                    {
+                        label: 'Corruption Value',
+                        data: [],
+                        borderColor: '#a855f7',
+                        backgroundColor: 'rgba(168,85,247,0.08)',
+                        tension: 0.3, borderWidth: 1.5, pointRadius: 0,
+                        fill: false, borderDash: [4,3], yAxisID: 'y3'
                     }
                 ]
             },
@@ -173,7 +185,7 @@ class PuffinZipAIApp {
                         position: 'right',
                         offset: true,
                         ticks: { color: '#fbbf24', stepSize: 25 },
-                        title: { display: true, text: 'Complexity (1-100)', color: '#fbbf24' }
+                        title: { display: true, text: 'Complexity / Corruption (0-100)', color: '#fbbf24' }
                     }
                 }
             }
@@ -231,6 +243,21 @@ class PuffinZipAIApp {
             const d = q('mutation-rate-display');
             if (d) d.textContent = e.target.value + '%';
         });
+
+        // Override complexity slider display
+        q('override-complexity')?.addEventListener('input', e => {
+            const d = q('override-complexity-display');
+            if (d) d.textContent = e.target.value === '0' ? 'auto' : e.target.value + '%';
+        });
+
+        // Apply manual overrides
+        q('btn-apply-overrides')?.addEventListener('click', () => this.applyOverrides());
+        q('btn-clear-overrides')?.addEventListener('click', () => this.clearOverrides());
+
+        // Run queue controls
+        q('btn-rq-add')?.addEventListener('click', () => this.rqAddStep());
+        q('btn-rq-clear')?.addEventListener('click', () => this.rqClear());
+        q('btn-rq-start')?.addEventListener('click', () => this.rqStart());
 
         // Tab switching
         document.querySelectorAll('.tab-btn').forEach(btn => {
@@ -341,13 +368,158 @@ class PuffinZipAIApp {
         }
     }
 
+    async applyOverrides() {
+        const sizeInput = document.getElementById('override-size-kb');
+        const cpxInput = document.getElementById('override-complexity');
+        const sizeKb = sizeInput?.value ? parseInt(sizeInput.value) : null;
+        const cpxPct = cpxInput && parseInt(cpxInput.value) > 0 ? parseInt(cpxInput.value) : null;
+
+        if (sizeKb === null && cpxPct === null) {
+            alert('Set at least one floor value (min size or min complexity).');
+            return;
+        }
+
+        try {
+            const res = await fetch(_P + '/api/training/set-overrides', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ benchmark_size_kb: sizeKb, complexity_pct: cpxPct })
+            });
+            const d = await res.json();
+            if (d.success) {
+                window.logMessage?.(`Difficulty floor set — min size: ${sizeKb ?? 'auto'} KB, min complexity: ${cpxPct ?? 'auto'}%`, 'INFO');
+            } else {
+                alert('Floor update failed: ' + (d.error || 'Unknown error'));
+            }
+        } catch (e) {
+            alert('Floor request failed: ' + e.message);
+        }
+    }
+
+    clearOverrides() {
+        const sizeInput = document.getElementById('override-size-kb');
+        const cpxInput = document.getElementById('override-complexity');
+        const cpxDisplay = document.getElementById('override-complexity-display');
+        if (sizeInput) sizeInput.value = '';
+        if (cpxInput) cpxInput.value = '0';
+        if (cpxDisplay) cpxDisplay.textContent = 'auto';
+    }
+
+    /* ------------------------------------------------------------------
+       Run Queue — sequential multi-override sweeps
+       ------------------------------------------------------------------ */
+    rqAddStep() {
+        const gens = parseInt(document.getElementById('rq-gens')?.value) || 100;
+        const sizeRaw = document.getElementById('rq-size')?.value;
+        const cpxRaw = document.getElementById('rq-cpx')?.value;
+        const sizeKb = sizeRaw ? Math.max(1, Math.min(10240, parseInt(sizeRaw))) : null;
+        const cpxPct = cpxRaw ? Math.max(0, Math.min(100, parseInt(cpxRaw))) : null;
+        const label = `Step ${this.runQueue.length + 1}`;
+        this.runQueue.push({ generations: gens, benchmark_size_kb: sizeKb, complexity_pct: cpxPct, label });
+        this._rqRender();
+    }
+
+    rqRemoveStep(idx) {
+        this.runQueue.splice(idx, 1);
+        // Re-label
+        this.runQueue.forEach((s, i) => s.label = `Step ${i + 1}`);
+        this._rqRender();
+    }
+
+    rqClear() {
+        this.runQueue = [];
+        this._rqRender();
+    }
+
+    _rqRender() {
+        const el = document.getElementById('rq-list');
+        if (!el) return;
+        if (this.runQueue.length === 0) {
+            el.innerHTML = '<span style="color:var(--text-secondary);font-style:italic;">No steps queued</span>';
+            return;
+        }
+        const rows = this.runQueue.map((s, i) => {
+            const size = s.benchmark_size_kb !== null ? `${s.benchmark_size_kb}KB` : 'auto';
+            const cpx = s.complexity_pct !== null ? `${s.complexity_pct}%` : 'auto';
+            return `<div style="display:flex;align-items:center;gap:4px;padding:2px 0;border-bottom:1px solid var(--border-color);">`
+                + `<span style="flex:1;">${i + 1}. <b>${s.generations}</b>g · ${size} · ${cpx}</span>`
+                + `<button class="btn btn-sm" style="padding:0 4px;font-size:10px;line-height:1;" onclick="window._pzApp.rqRemoveStep(${i})" title="Remove step">✕</button>`
+                + `</div>`;
+        }).join('');
+        el.innerHTML = rows;
+    }
+
+    async rqStart() {
+        if (this.runQueue.length === 0) {
+            alert('Add at least one step to the queue.');
+            return;
+        }
+        const btn = document.getElementById('btn-rq-start');
+        if (btn) btn.disabled = true;
+
+        // Archive current chart if needed
+        if (this.chart && this.chart.data.labels.length > 0) {
+            window.archiveAndResetChart?.();
+        }
+
+        const pop = document.getElementById('population-size')?.value || 50;
+        const batch = document.getElementById('batch-size')?.value || 10;
+        const device = document.getElementById('device-select')?.value || 'GPU_AUTO';
+        const workers = document.getElementById('cpu-workers')?.value || 4;
+
+        try {
+            const res = await fetch(_P + '/api/training/start-queue', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    steps: this.runQueue,
+                    population_size: parseInt(pop),
+                    batch_size: parseInt(batch),
+                    target_device: device,
+                    cpu_workers: parseInt(workers),
+                })
+            });
+            const d = await res.json();
+            if (d.success) {
+                this.isTraining = true;
+                this.popPage = 1;
+                this.popExpandedGens.clear();
+                this.updateUIState();
+                window.logMessage?.(`Run queue started — ${d.steps} steps`, 'INFO');
+            } else {
+                alert('Queue start failed: ' + (d.error || 'Unknown error'));
+                if (btn) btn.disabled = false;
+            }
+        } catch (e) {
+            alert('Queue request failed: ' + e.message);
+            if (btn) btn.disabled = false;
+        }
+    }
+
+    _rqUpdateProgress(status) {
+        const el = document.getElementById('rq-progress');
+        const btn = document.getElementById('btn-rq-start');
+        if (status.run_queue_active) {
+            if (el) {
+                el.style.display = 'block';
+                el.textContent = `Running step ${status.run_queue_step} of ${status.run_queue_total}…`;
+            }
+            if (btn) btn.disabled = true;
+        } else {
+            if (el) el.style.display = 'none';
+            if (btn) btn.disabled = false;
+        }
+    }
+
     updateUIState() {
         const q = id => document.getElementById(id);
         const btnContinue = q('btn-continue');
+        const btnRqStart = q('btn-rq-start');
         if (this.isTraining) {
             if (q('btn-start')) q('btn-start').disabled = true;
             if (q('btn-stop'))  q('btn-stop').disabled = false;
             if (btnContinue) btnContinue.disabled = true;
+            if (btnRqStart) btnRqStart.disabled = true;
             if (q('training-status')) { q('training-status').innerText = 'Training'; q('training-status').style.color = '#4ade80'; }
             if (q('status-indicator')) q('status-indicator').className = 'status-indicator training';
             if (q('status-text')) q('status-text').innerText = 'Training';
@@ -356,6 +528,7 @@ class PuffinZipAIApp {
             if (q('btn-stop'))  q('btn-stop').disabled = true;
             // Show Continue only when a completed run exists
             if (btnContinue) btnContinue.disabled = !this.canContinue;
+            if (btnRqStart) btnRqStart.disabled = false;
             if (q('training-status')) { q('training-status').innerText = 'Idle'; q('training-status').style.color = ''; }
             if (q('status-indicator')) q('status-indicator').className = 'status-indicator';
             if (q('status-text')) q('status-text').innerText = this.canContinue ? 'Completed' : 'Ready';
@@ -401,6 +574,9 @@ class PuffinZipAIApp {
                 else if (elapsed < 3600) evoEl.innerText = (elapsed / 60).toFixed(1) + 'm';
                 else evoEl.innerText = (elapsed / 3600).toFixed(2) + 'h';
             }
+
+            // Update run queue progress indicator
+            this._rqUpdateProgress(d);
         } catch (_) {}
     }
 
@@ -462,6 +638,9 @@ class PuffinZipAIApp {
             const robustness = d.best_robustness || 0;
             const trainingPhase = d.training_phase || '—';
             const corruptionLvl = d.corruption_level || 0;
+            // Independent anti-corruption progression (0-100), gated on robustness.
+            const corruptionPct = d.corruption_value !== undefined ? d.corruption_value : 0;
+            const robustnessRate = d.robustness_rate;
             const decompMM = d.decomp_mismatches || 0;
             const itemsEval = d.items_evaluated || 0;
             const successComp = d.successful_compressions || 0;
@@ -471,9 +650,22 @@ class PuffinZipAIApp {
             // Show short phase label in KPI sub
             set('metric-training-phase', trainingPhase || '—');
 
+            // Corruption progression bar (separate from the complexity bar)
+            const corrPct = Math.min(100, Math.max(2, corruptionPct));
+            const corrBar = q('corruption-bar');
+            if (corrBar) {
+                corrBar.style.width = corrPct + '%';
+                const cl = q('corruption-bar-label');
+                if (cl) cl.innerText = `${corruptionPct}%`;
+            }
+
             // Sidebar detail rows
             set('detail-training-phase', trainingPhase || '—');
+            set('detail-corruption-progress', `${corruptionPct} / 100`);
             set('detail-corruption-level', corruptionLvl.toFixed(3));
+            set('detail-robustness-rate',
+                (robustnessRate === undefined || robustnessRate === null)
+                    ? '—' : `${(robustnessRate * 100).toFixed(0)}%`);
             set('detail-robustness', robustness.toFixed(4));
             set('detail-items-evaluated', itemsEval);
             set('detail-successful-comp', successComp);
@@ -523,6 +715,10 @@ class PuffinZipAIApp {
                 });
                 // Complexity value per generation (if tracked)
                 this.chart.data.datasets[2].data = d.metrics.map(m => m.complexity_value !== undefined ? m.complexity_value : 0);
+                // Corruption value per generation — the independent second track
+                if (this.chart.data.datasets[3]) {
+                    this.chart.data.datasets[3].data = d.metrics.map(m => m.corruption_value !== undefined ? m.corruption_value : 0);
+                }
                 this.chart.update('none');
             }
         } catch (_) {}

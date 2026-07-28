@@ -99,6 +99,29 @@ class GenerationBenchmarkReport:
     summary: str = ""
 
 
+@dataclass
+class RobustnessBenchmarkReport:
+    """Robustness gold-standard report for one generation.
+
+    The anti-corruption analogue of :class:`GenerationBenchmarkReport`.  The
+    head-to-head is run on CORRUPTED data using the best anti-corruption agent:
+    an item is a "win" when the agent both survives the noise (verified
+    round-trip) AND beats every baseline compressor's size on that corrupted
+    stream.  ``win_rate`` gates the corruption-track advancement.
+    """
+    generation: int
+    timestamp: str
+    num_items: int
+    agent_id: str
+    robustness_fitness: float
+    wins: int = 0
+    survived: int = 0            # items the agent round-tripped without error
+    win_rate: float = 0.0        # wins / num_items
+    survival_rate: float = 0.0   # survived / num_items
+    gold_standard: bool = False  # True when the agent beat ALL baselines on ALL items
+    summary: str = ""
+
+
 # ---------------------------------------------------------------------------
 # Baseline helpers
 # ---------------------------------------------------------------------------
@@ -678,6 +701,131 @@ class GoldStandardBenchmark:
         # --- Failure diagnostics: save artefacts ---
         if not report.gold_standard:
             self._save_failure_artifacts(generation, report, test_items, agent_ai)
+
+        return report
+
+    # ------------------------------------------------------------------
+    # Robustness gold-standard (anti-corruption track)
+    # ------------------------------------------------------------------
+
+    def benchmark_robustness(
+        self,
+        generation: int,
+        best_anti_agent,                   # EvolvingAgent (best anti_corruption)
+        corrupted_items: List[str],
+        gui_msg_fn: Optional[Callable] = None,
+    ) -> RobustnessBenchmarkReport:
+        """Robustness head-to-head on CORRUPTED data.
+
+        The anti-corruption analogue of :meth:`benchmark_generation`.  For each
+        corrupted item the best anti-corruption agent compresses + decompresses
+        it; an item is a "win" when the agent survives the noise (verified
+        round-trip, smaller than original) AND its compressed size beats every
+        baseline compressor's size on that same corrupted stream.  Off-the-shelf
+        compressors are brittle on corrupted input, so a high win rate proves
+        the anti-corruption lineage is genuinely more resilient.
+
+        Parameters
+        ----------
+        generation : int
+            Current generation number.
+        best_anti_agent : EvolvingAgent
+            Top anti-corruption agent (ranked by robustness fitness).
+        corrupted_items : list[str]
+            The corrupted benchmark texts the anti-corruption agents were
+            evaluated on this generation.
+        gui_msg_fn : callable, optional
+            ``fn(message, level)`` for status output.
+
+        Returns
+        -------
+        RobustnessBenchmarkReport
+            ``win_rate`` (0.0-1.0) gates the corruption-track advancement.
+        """
+        self._ensure_rle_fns()
+        _init_baselines()
+
+        agent_ai = (best_anti_agent.get_puffin_ai()
+                    if hasattr(best_anti_agent, 'get_puffin_ai') else best_anti_agent)
+        agent_id = getattr(best_anti_agent, 'agent_id', 'unknown')
+        rfit = (getattr(best_anti_agent, 'robustness_fitness', 0.0) or 0.0)
+
+        report = RobustnessBenchmarkReport(
+            generation=generation,
+            timestamp=datetime.now().isoformat(),
+            num_items=len(corrupted_items),
+            agent_id=agent_id,
+            robustness_fitness=rfit,
+        )
+
+        if not corrupted_items or not (self._rle_compress and self._rle_decompress):
+            report.summary = "No corrupted items or RLE fns unavailable — skipped."
+            return report
+
+        wins = 0
+        survived = 0
+        all_items_beat = True
+        for item_text in corrupted_items:
+            if not item_text:
+                continue
+            original_bytes = item_text.encode('utf-8') if isinstance(item_text, str) else item_text
+            original_size = len(original_bytes)
+
+            # --- AI on the corrupted stream ---
+            ai_verified = False
+            ai_size = original_size
+            try:
+                comp_text, decomp_text, _action = _compress_with_agent(
+                    agent_ai, item_text, self._rle_compress, self._rle_decompress
+                )
+                ai_size = _measure_compressed_size(comp_text) if isinstance(comp_text, str) else len(comp_text)
+                ai_verified = (decomp_text == item_text) and ai_size < original_size
+            except Exception:
+                ai_verified = False
+
+            if ai_verified:
+                survived += 1
+
+            # --- Baselines on the same corrupted stream ---
+            baseline_sizes = []
+            for method_name in _BASELINE_METHODS:
+                bl = _compress_baseline(method_name, original_bytes)
+                if not bl.error and bl.verified:
+                    baseline_sizes.append(bl.compressed_size)
+
+            beats_all = ai_verified and bool(baseline_sizes) and all(
+                ai_size < bs for bs in baseline_sizes
+            )
+            if beats_all:
+                wins += 1
+            else:
+                all_items_beat = False
+
+        n = max(1, report.num_items)
+        report.wins = wins
+        report.survived = survived
+        report.win_rate = wins / n
+        report.survival_rate = survived / n
+        report.gold_standard = all_items_beat and wins > 0
+        report.summary = (
+            f"Gen {generation} robustness H2H | Agent {agent_id} (rfit {rfit:.4f}) | "
+            f"items {report.num_items} | survived {survived} ({report.survival_rate:.0%}) | "
+            f"wins {wins} ({report.win_rate:.0%}) | "
+            f"{'ROBUSTNESS GOLD STANDARD' if report.gold_standard else 'not gold'}"
+        )
+
+        if report.gold_standard:
+            self.logger.info(f"ROBUSTNESS GOLD STANDARD achieved at generation {generation}!")
+        self.logger.info(report.summary)
+        if gui_msg_fn:
+            if report.gold_standard:
+                gui_msg_fn(
+                    f"Gen {generation}: ROBUSTNESS GOLD STANDARD — best anti-corruption agent "
+                    f"beat ALL baselines on ALL corrupted items!", "info")
+            else:
+                gui_msg_fn(
+                    f"Gen {generation}: Robustness H2H {wins}/{report.num_items} wins "
+                    f"({report.survival_rate:.0%} survived) vs baselines on corrupted data.", "info")
 
         return report
 

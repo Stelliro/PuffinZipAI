@@ -27,6 +27,23 @@ try:
 except ImportError:
     pass
 
+# GPU-accelerated agent class (CuPy Q-table + batched inference + GPU RLE).
+# The base ``PuffinZipAI`` above is CPU-only: it lacks ``batch_choose_actions``,
+# ``q_table_gpu`` and ``finalize_gpu_init``, so instantiating it leaves the GPU
+# idle even when one is present.  We import the GPU subclass here and select it
+# at runtime (see EvolutionaryOptimizer.__init__) whenever a GPU device is
+# requested and CuPy is actually importable.
+PuffinZipAI_GPU: Any = None
+_GPU_CUPY_AVAILABLE = False
+try:
+    from ..gpu_core.gpu_ai_agent import (
+        PuffinZipAI_GPU as _PZAI_GPU_cls,
+        CUPY_AVAILABLE as _GPU_CUPY_AVAILABLE,
+    )
+    PuffinZipAI_GPU = _PZAI_GPU_cls
+except ImportError:
+    pass
+
 # Novelty/Diversity scoring
 _calculate_population_novelty_scores = None
 _calculate_generation_repetition_penalty = None
@@ -97,8 +114,14 @@ except ImportError: pass
 # Novel compression method generator
 NovelCompressionGenerator: Any = None
 get_novel_generator: Any = None
+RecipeEvolver: Any = None
+NovelMethodRecipe: Any = None
+MethodRegistry: Any = None
 try:
-    from ..novel_compression_generator import NovelCompressionGenerator, get_generator as get_novel_generator
+    from ..novel_compression_generator import (
+        NovelCompressionGenerator, get_generator as get_novel_generator,
+        RecipeEvolver, NovelMethodRecipe, MethodRegistry,
+    )
 except ImportError:
     pass
 
@@ -191,7 +214,19 @@ class EvolutionaryOptimizer:
         # --- GPU MODE ---
         self.target_device = target_device
         self.dynamic_benchmarking_active = bool(dynamic_benchmarking_active)
-        
+
+        # Resolve the concrete agent class up-front.  When a GPU device is
+        # requested AND CuPy is importable, use the GPU-accelerated agent so the
+        # Q-table, batched action inference and RLE kernels actually run on the
+        # GPU.  Otherwise fall back to the CPU base class.  ``_gpu_agents_active``
+        # is surfaced in logs/metrics so a missing-CuPy situation is obvious.
+        self._agent_class = PuffinZipAI
+        self._gpu_agents_active = False
+        _want_gpu = "GPU" in str(self.target_device).upper()
+        if _want_gpu and PuffinZipAI_GPU is not None and _GPU_CUPY_AVAILABLE:
+            self._agent_class = PuffinZipAI_GPU
+            self._gpu_agents_active = True
+
         self.gui_output_queue = gui_output_queue
         self.gui_stop_event = gui_stop_event or threading.Event()
         
@@ -240,6 +275,18 @@ class EvolutionaryOptimizer:
         # recent generation.  Surfaced in the WebUI dashboard.
         self._last_training_phase = ''
         self._last_corruption_level = 0.0
+        # Anti-corruption progression track (independent of compression).
+        # _last_robustness_success_rate: fraction (0.0-1.0) of corrupted items the
+        #   best anti-corruption agent recovered last generation — this GATES the
+        #   corruption difficulty, exactly like compression ratio gates complexity.
+        # _last_corruption_pct: current position on the 0-100 corruption track.
+        self._last_robustness_success_rate = -1.0
+        # Robustness gold-standard win rate (fraction 0.0-1.0 of corrupted items
+        # where the best anti-corruption agent beat ALL baseline compressors).
+        # Mirrors _last_gold_standard_win_rate for the compression track and
+        # gates corruption-track advancement.  -1.0 = no head-to-head data yet.
+        self._last_robustness_gs_win_rate = -1.0
+        self._last_corruption_pct = 0
         
         # --- CHECKPOINT AUTO-SAVE ---
         # Auto-save every N generations and at the end of training.
@@ -253,7 +300,42 @@ class EvolutionaryOptimizer:
         # Each entry: dict mapping method_name -> average usage fraction
         self._generation_method_history = []
         self._max_history_length = 50  # only track last 50 generations
-        
+
+        # --- DIVERSITY COLLAPSE DETECTION (v0.9.10) ---
+        # Proactive diversity monitoring that triggers a "diversity boost"
+        # BEFORE full fitness stagnation.  Complements the existing
+        # fitness-stagnation hypermutation (which remains as a backup).
+        #
+        # How it works:
+        #   1. After each evaluation, compute a diversity index (0.0=monoculture,
+        #      1.0=maximally diverse) from agent method profiles + novelty scores.
+        #   2. Track rolling history of diversity indices.
+        #   3. If the index stays below DIVERSITY_MIN_INDEX for
+        #      DIVERSITY_COLLAPSE_GENERATIONS consecutive gens, OR if any single
+        #      method dominates > DIVERSITY_MAX_METHOD_DOMINANCE of the population,
+        #      flag diversity collapse.
+        #   4. When collapse is detected, activate a "diversity boost" in the
+        #      breeding cycle — more aggressive mutation, increased heritage
+        #      reuse, and elevated Q-table noise — without waiting for full
+        #      fitness stagnation.
+        #
+        # Tuning constants (all overridable via constructor kwargs):
+        self.DIVERSITY_COLLAPSE_GENERATIONS = 3   # consecutive low-diversity gens to trigger
+        self.DIVERSITY_MIN_INDEX = 0.25            # diversity index below this = "low diversity"
+        self.DIVERSITY_MAX_METHOD_DOMINANCE = 0.75 # single method > 75% of population = collapse
+        self.DIVERSITY_BOOST_MUTATION_RATE = 0.30  # elevated mutation rate during diversity boost
+        self.DIVERSITY_BOOST_HYPERMUTATION_FRACTION = 0.35  # fraction of children that get hypermutation
+        self.DIVERSITY_BOOST_QTABLE_NOISE_RATE = 0.25       # Q-table noise mask probability
+        self.DIVERSITY_BOOST_QTABLE_NOISE_STD  = 0.12       # Q-table noise standard deviation
+
+        # State
+        self._diversity_index_history: list[float] = []  # rolling diversity index per gen
+        self._diversity_collapse_counter = 0              # consecutive low-diversity generations
+        self._diversity_boost_active = False               # True in current breeding cycle
+        self._last_diversity_index = 1.0                   # most recent diversity index (for metrics)
+        self._last_method_dominance = 0.0                  # most recent max method fraction
+        self._last_dominant_method = ''                     # name of the dominant method
+
         # --- LOGGING ---
         self.logger = logging.getLogger('EvolutionaryOptimizer')
         
@@ -325,6 +407,16 @@ class EvolutionaryOptimizer:
         # it creates the fetcher and triggers a background download.
         self._github_fetcher = None
         self._github_items_cache: list[str] = []  # Cached GitHub benchmark items
+
+        # --- METHOD REGISTRY / GRAVEYARD (v0.9.10) ---
+        # Persistent catalogue of ALL recipe families ever discovered.
+        # Dead recipes persist so they can be recognized if they re-emerge.
+        self._method_registry: Any = None
+        if MethodRegistry is not None:
+            try:
+                self._method_registry = MethodRegistry()
+            except Exception as e_mr:
+                self.logger.debug(f"Method registry init failed (non-fatal): {e_mr}")
 
         # --- INIT TIMING SUMMARY ---
         total_init_ms = sum(_init_timings.values())
@@ -532,12 +624,26 @@ class EvolutionaryOptimizer:
                     'best_robustness': round(float(self._last_gen_best_robustness), 4),
                     'training_phase': self._last_training_phase,
                     'corruption_level': round(float(self._last_corruption_level), 4),
+                    # Anti-corruption progression track (0-100), independent of
+                    # the compression complexity track above.
+                    'corruption_value': int(getattr(self, '_last_corruption_pct', 0)),
+                    'robustness_rate': round(float(max(0.0, getattr(self, '_last_robustness_success_rate', 0.0))), 4),
+                    # Robustness gold-standard win rate (anti-corruption track's
+                    # head-to-head vs baselines on corrupted data), parallel to
+                    # gold_standard_win_rate for compression.
+                    'robustness_gold_standard_win_rate': round(float(max(0.0, getattr(self, '_last_robustness_gs_win_rate', 0.0))), 3),
                     'decomp_mismatches': decomp_mismatches,
                     'items_evaluated': items_evaluated,
                     'successful_compressions': successful_compressions,
                     'gold_standard_win_rate': round(float(self._last_gold_standard_win_rate), 3),
                     'method_stats': method_stats,
                     'novel_pipeline': novel_pipeline_name,
+                    # v0.9.10: Diversity & stagnation metrics
+                    'diversity_index': getattr(self, '_last_diversity_index', 1.0),
+                    'method_dominance': getattr(self, '_last_method_dominance', 0.0),
+                    'dominant_method': getattr(self, '_last_dominant_method', ''),
+                    'stagnation_counter': self._stagnation_counter,
+                    'diversity_boost_active': getattr(self, '_diversity_boost_active', False),
                 })
                 self.gui_output_queue.put_nowait(f"METRICS_JSON:{payload}")
             except queue.Full: pass
@@ -576,6 +682,9 @@ class EvolutionaryOptimizer:
                     "fitness": fit if fit is not None else float('nan'),
                     "generation_born": getattr(agent, 'generation_born', 0),
                     "parent_ids": list(getattr(agent, 'parent_ids', [])),
+                    "agent_type": getattr(agent, 'agent_type', 'compression'),
+                    "compression_fitness": getattr(agent, 'compression_fitness', 0.0) or 0.0,
+                    "robustness_fitness": getattr(agent, 'robustness_fitness', 0.0) or 0.0,
                     "learning_rate": getattr(ai_core, 'learning_rate', 0.0) if ai_core else 0.0,
                     "exploration_rate": getattr(ai_core, 'exploration_rate', 0.0) if ai_core else 0.0,
                     "rle_min_run": getattr(ai_core, 'rle_min_encodable_run_length', 'N/A') if ai_core else 'N/A',
@@ -589,9 +698,38 @@ class EvolutionaryOptimizer:
                            and hasattr(ai_core.novel_method, 'metadata')
                         else 'none'
                     ),
+                    # v0.9.9: has_novel_method is TRUE only when the recipe
+                    # has proven improvements (is_mature), not just because
+                    # the agent has compression closures assigned.
                     "has_novel_method": bool(
-                        ai_core and hasattr(ai_core, '_novel_compress_fn')
-                        and ai_core._novel_compress_fn is not None
+                        getattr(agent, 'has_mature_novel_method', False)
+                    ),
+                    # v0.9.9: Recipe maturity info for deep-dive
+                    "recipe_improvements": (
+                        len(agent.novel_recipe.improvement_log)
+                        if getattr(agent, 'novel_recipe', None) is not None
+                        else 0
+                    ),
+                    # v0.9.10: Recipe strength + family key for per-agent visibility
+                    "recipe_strength": (
+                        round(agent.novel_recipe.strength, 3)
+                        if getattr(agent, 'novel_recipe', None) is not None
+                        else 0.0
+                    ),
+                    "recipe_family": (
+                        agent.novel_recipe.family_key
+                        if getattr(agent, 'novel_recipe', None) is not None
+                        else "none"
+                    ),
+                    "recipe_is_alive": (
+                        agent.novel_recipe.is_alive
+                        if getattr(agent, 'novel_recipe', None) is not None
+                        else True
+                    ),
+                    "recipe_times_rediscovered": (
+                        agent.novel_recipe.times_rediscovered
+                        if getattr(agent, 'novel_recipe', None) is not None
+                        else 0
                     ),
                 }
                 batch_agents.append(summary)
@@ -720,11 +858,30 @@ class EvolutionaryOptimizer:
         if get_novel_generator:
             try:
                 novel_gen = get_novel_generator()
-                self._send_to_gui("Novel Compression Generator loaded — each agent will get a unique method.")
+                # v0.9.9: All agents start with the same base recipe.
+                # Novel methods are built incrementally, not randomly assigned.
+                self._send_to_gui(
+                    "Novel Compression Generator loaded — agents will build "
+                    "novel methods incrementally through heritage."
+                )
             except Exception as e:
                 self._send_to_gui(f"Warning: NovelCompressionGenerator not available: {e}", "warning")
         _pop_t1 = time.perf_counter()
         _dprint(f"DEBUG-TIMING: [pop:novel_gen_load] {(_pop_t1 - _pop_t0)*1000:.0f}ms")
+
+        # --- Announce the resolved agent class so GPU usage is unambiguous ---
+        if "GPU" in str(self.target_device).upper():
+            if self._gpu_agents_active:
+                self._send_to_gui(
+                    f"GPU acceleration ACTIVE — agents use {self._agent_class.__name__} "
+                    f"(CuPy Q-table + batched inference + GPU RLE kernels).")
+            else:
+                _why = ("CuPy not importable" if not _GPU_CUPY_AVAILABLE
+                        else "GPU agent class unavailable")
+                self._send_to_gui(
+                    f"GPU requested ('{self.target_device}') but NOT active ({_why}) — "
+                    f"agents will run on CPU. Install CuPy to enable GPU acceleration.",
+                    "warning")
 
         # --- WARM the GPU validation cache ONCE before creating any agent ---
         # This avoids 50x redundant GPU device probes.
@@ -744,6 +901,20 @@ class EvolutionaryOptimizer:
 
         new_pop = []
         start_time = time.perf_counter()
+
+        # --- v0.9.9: Load recipe vault for seeding new agents ---
+        # Top recipes from previous runs are loaded and assigned to the
+        # first N agents so proven novel methods survive across restarts.
+        _vault_recipes: list = []
+        try:
+            _vault_recipes = self._load_recipe_vault()
+            if _vault_recipes:
+                self._send_to_gui(
+                    f"Recipe vault: loaded {len(_vault_recipes)} proven recipe(s) "
+                    f"from prior runs — seeding into new population."
+                )
+        except Exception:
+            pass  # Vault loading is non-critical
 
         # --- Phase 1: Create agents with DEFERRED GPU init (CPU-only work) ---
         # This is the parallelizable part: Q-table numpy creation, novel method gen, param randomization
@@ -765,8 +936,9 @@ class EvolutionaryOptimizer:
                 if hasattr(core, 'q_table'):
                     core.q_table = np.random.uniform(-0.1, 0.1, core.q_table.shape)
 
+            agent_cls = self._agent_class
             try:
-                ai_core = PuffinZipAI(**ai_params)
+                ai_core = agent_cls(**ai_params)
                 randomize_q(ai_core)
             except TypeError:
                 # Fallback: try without _defer_gpu_transfer (CPU-only build)
@@ -778,24 +950,47 @@ class EvolutionaryOptimizer:
                     'rle_min_encodable_run_length': rle_min_run,
                 }
                 try:
-                    ai_core = PuffinZipAI(**fallback_params)
+                    ai_core = agent_cls(**fallback_params)
                     randomize_q(ai_core)
                 except Exception as e:
                     print(f"Failed to create agent {index}: {e}")
                     return None
 
-            # Assign novel compression method (CPU-only work)
-            if novel_gen:
+            # --- v0.9.9: Assign recipe + build closures ---
+            # If this agent's index maps to a vault recipe (from a prior run),
+            # use that instead of the base recipe.  Otherwise all agents start
+            # with the same simple base recipe (rle_only) and build complexity
+            # incrementally through mutations and heritage inheritance.
+            base_recipe = None
+            if RecipeEvolver is not None and novel_gen:
                 try:
-                    num_patterns = random.randint(1, 3)
-                    method = novel_gen.generate_novelty_method(
-                        method_name=f"agent_{index}_novel_v1",
-                        pattern_combo_size=num_patterns
+                    # Check if a vault recipe is available for this index.
+                    # Vault recipes are distributed across both agent types:
+                    # even-indexed vault recipes go to compression agents (low
+                    # indices), odd-indexed vault recipes go to anti-corruption
+                    # agents (high indices) so both types benefit.
+                    vault_recipe = None
+                    if _vault_recipes:
+                        half = self.population_size // 2
+                        is_comp = index < half
+                        type_index = index if is_comp else (index - half)
+                        # Assign vault recipes round-robin within each type
+                        if type_index < len(_vault_recipes):
+                            import copy as _copy_mod
+                            vault_recipe = _copy_mod.deepcopy(_vault_recipes[type_index])
+
+                    if vault_recipe is not None:
+                        base_recipe = vault_recipe
+                    else:
+                        base_recipe = RecipeEvolver.create_base_recipe(generation=0)
+                    method = novel_gen.build_method_from_recipe(
+                        base_recipe,
+                        method_name=f"agent_{index}_{'vault' if vault_recipe else 'base'}",
                     )
                     ai_core.novel_method = method
                     ai_core._novel_compress_fn = method.compress_fn
                     ai_core._novel_decompress_fn = method.decompress_fn
-                except Exception as e:
+                except Exception:
                     pass  # Novel methods are optional
 
             # --- v0.9.7: 50/50 agent type split ---
@@ -808,6 +1003,7 @@ class EvolutionaryOptimizer:
                     ai_core, generation_born=0,
                     agent_id=f"gen0_agent_{index}",
                     agent_type=agent_type,
+                    novel_recipe=base_recipe,
                 )
                 self._sanitize_agent(agent)
                 return agent
@@ -1137,6 +1333,13 @@ class EvolutionaryOptimizer:
                         phase1_end=_PHASED_TRAINING_PHASE1_END,
                         phase2_end=_PHASED_TRAINING_PHASE2_END,
                         phase3_github_ratio=_PHASED_TRAINING_PHASE3_GITHUB_RATIO,
+                        # Gate corruption difficulty on LAST gen's robustness so
+                        # the anti-corruption track advances on its own merit.
+                        best_robustness_rate=self._last_robustness_success_rate,
+                        # Additional gold-standard gate: the corruption track
+                        # only climbs when the best anti-corruption agent is also
+                        # beating baseline compressors on corrupted data.
+                        robustness_gs_win_rate=self._last_robustness_gs_win_rate,
                     )
                 )
                 github_items_used = getattr(
@@ -1192,6 +1395,13 @@ class EvolutionaryOptimizer:
                                 gui_stop_event=self.gui_stop_event,
                             )
 
+                        # Track the best anti-corruption agent's recovery rate:
+                        # the fraction of corrupted items it compressed AND
+                        # decompressed correctly.  This bounded (0-1) metric gates
+                        # the corruption difficulty next generation.
+                        _best_rfit = None
+                        _best_recovery_rate = -1.0
+                        _best_anti_agent = None
                         if corrupt_results:
                             for j, agent in enumerate(anti_corruption_agents):
                                 if j < len(corrupt_results):
@@ -1201,6 +1411,39 @@ class EvolutionaryOptimizer:
                                         agent.evaluation_stats['robustness_fitness'] = rfit
                                         agent.evaluation_stats['corruption_eval'] = rstats
                                         agent.evaluation_stats['training_phase'] = phase_label
+                                    if rfit > -999 and (_best_rfit is None or rfit > _best_rfit):
+                                        _best_rfit = rfit
+                                        _best_anti_agent = agent
+                                        if isinstance(rstats, dict):
+                                            _n_eval = rstats.get('items_evaluated', 0)
+                                            _n_ok = rstats.get('successful_rle', 0)
+                                            _best_recovery_rate = (_n_ok / _n_eval) if _n_eval > 0 else 0.0
+                        # Persist for next generation's corruption gating.
+                        if _best_recovery_rate >= 0.0:
+                            self._last_robustness_success_rate = _best_recovery_rate
+
+                        # --- ROBUSTNESS GOLD-STANDARD HEAD-TO-HEAD ---
+                        # Pit the best anti-corruption agent against the baseline
+                        # compressors on CORRUPTED data.  The resulting win rate
+                        # gates the corruption track next generation (mirrors the
+                        # compression gold-standard gate).  Capped to a sample so
+                        # the extra head-to-head stays cheap.
+                        if (self.gold_standard_benchmark and _best_anti_agent is not None
+                                and anti_corr_items):
+                            try:
+                                _rgs_sample = anti_corr_items[:30]
+                                rgs_report = self.gold_standard_benchmark.benchmark_robustness(
+                                    generation=generation_num,
+                                    best_anti_agent=_best_anti_agent,
+                                    corrupted_items=_rgs_sample,
+                                    gui_msg_fn=self._send_to_gui,
+                                )
+                                if rgs_report and rgs_report.num_items > 0:
+                                    self._last_robustness_gs_win_rate = rgs_report.win_rate
+                            except Exception as e_rgs:
+                                self._send_to_gui(
+                                    f"Gen {generation_num}: Robustness gold-standard error (non-fatal): {e_rgs}",
+                                    "warning")
                     except Exception as e_corrupt:
                         self._send_to_gui(f"Gen {generation_num}: Corruption eval error (non-fatal): {e_corrupt}", "warning")
                     finally:
@@ -1218,6 +1461,8 @@ class EvolutionaryOptimizer:
                     # Store phase info for METRICS_JSON (surfaced in WebUI)
                     self._last_training_phase = phase_label
                     self._last_corruption_level = corruption_level
+                    self._last_corruption_pct = getattr(
+                        self.benchmark_evaluator, '_corruption_pct', 0)
                 else:
                     for agent in anti_corruption_agents:
                         if hasattr(agent, 'robustness_fitness'):
@@ -1231,10 +1476,14 @@ class EvolutionaryOptimizer:
         except Exception as e_type_eval:
             self._send_to_gui(f"Gen {generation_num}: Type-aware eval error (non-fatal): {e_type_eval}", "warning")
 
-        # --- v0.9.7: Type-aware heritage trick recording ---
+        # --- v0.9.7 + v0.9.9: Type-aware heritage trick recording + recipe improvement ---
         # After evaluation, record the agent's novel method as a heritage
         # trick if it performed well.  This ensures children and grandchildren
         # can inherit proven pipelines via the "grandpapi" lineage memory.
+        #
+        # v0.9.9: Also check if the pending recipe mutation improved fitness.
+        # If so, record it as a proven improvement in the recipe's log.
+        # This is the core mechanism that builds novel methods incrementally.
         #
         # KEY: anti_corruption agents only record tricks based on their
         # ROBUSTNESS fitness (i.e. pipelines that survived corruption), not
@@ -1249,6 +1498,16 @@ class EvolutionaryOptimizer:
                 trick_fitness = getattr(agent, 'robustness_fitness', 0.0) or 0.0
             else:
                 trick_fitness = agent.get_fitness() or 0.0
+
+            # --- v0.9.9: Check recipe improvement ---
+            # If this agent had a pending recipe mutation from breeding,
+            # check whether it improved over the recipe's historical best.
+            if hasattr(agent, 'check_recipe_improvement'):
+                try:
+                    agent.check_recipe_improvement(generation_num)
+                except Exception:
+                    pass
+
             if trick_fitness <= _HERITAGE_FITNESS_THRESHOLD:
                 continue
             ai_core = getattr(agent, 'puffin_ai', None)
@@ -1275,6 +1534,67 @@ class EvolutionaryOptimizer:
                         fitness=trick_fitness,
                         generation=generation_num,
                     )
+
+        # --- v0.9.9: Update recipe vault with best recipes ---
+        # Scan population and persist the top 5 novel method recipes to
+        # disk so they survive across training runs.
+        try:
+            self._save_recipe_vault(generation=generation_num)
+        except Exception:
+            pass  # Vault saving is non-critical
+
+        # --- v0.9.10: Strength decay + breeding-out + registry update ---
+        # Every generation, decay all living recipes' strength.  Recipes
+        # that hit 0 strength are "bred out" — replaced with a fresh base
+        # recipe.  All recipes (alive and dead) are logged to the registry.
+        _bred_out_count = 0
+        if RecipeEvolver is not None:
+            for agent in population_to_evaluate:
+                recipe = getattr(agent, 'novel_recipe', None)
+                if recipe is None:
+                    continue
+
+                # Decay strength (stagnant recipes lose strength faster)
+                is_dead = RecipeEvolver.decay_strength(recipe, generation_num)
+
+                if is_dead:
+                    # Recipe bred out — archive to graveyard and replace
+                    if self._method_registry:
+                        self._method_registry.register_death(recipe, generation_num)
+
+                    # Replace with a fresh base recipe
+                    try:
+                        new_recipe = RecipeEvolver.create_base_recipe(generation=generation_num)
+                        if get_novel_generator:
+                            novel_gen = get_novel_generator()
+                            method = novel_gen.build_method_from_recipe(
+                                new_recipe,
+                                method_name=f"gen{generation_num}_replacement_{agent.agent_id[:8]}",
+                            )
+                            agent.puffin_ai.novel_method = method
+                            agent.puffin_ai._novel_compress_fn = method.compress_fn
+                            agent.puffin_ai._novel_decompress_fn = method.decompress_fn
+                        agent.novel_recipe = new_recipe
+                        _bred_out_count += 1
+                    except Exception:
+                        pass  # Non-fatal: agent keeps the dead recipe
+                else:
+                    # Living recipe — register/update in the catalogue
+                    if self._method_registry:
+                        self._method_registry.register(recipe)
+
+            if _bred_out_count > 0:
+                self._send_to_gui(
+                    f"Gen {generation_num}: 💀 {_bred_out_count} recipe(s) bred out "
+                    f"(strength → 0, replaced with base recipe)"
+                )
+
+            # Save registry to disk periodically (every 5 gens)
+            if self._method_registry and generation_num % 5 == 0:
+                try:
+                    self._method_registry.save()
+                except Exception:
+                    pass
 
         # Update valid_scores after novelty adjustments
         # --- v0.9.7: TYPE-AWARE SCORING & SORTING ---
@@ -1423,6 +1743,13 @@ class EvolutionaryOptimizer:
             live_complexity_dwell = getattr(self.benchmark_evaluator, '_refreshes_at_current_tier', 0)
             live_size_dwell = getattr(self.benchmark_evaluator, '_previous_size_tier_refreshes', 0)
 
+        # Snapshot persistent floor overrides so the tmp evaluator uses them.
+        _floor_size = None
+        _floor_cpx = None
+        if self.benchmark_evaluator:
+            _floor_size = self.benchmark_evaluator._manual_benchmark_size_bytes
+            _floor_cpx = self.benchmark_evaluator._manual_complexity_pct
+
         def _worker():
             """Generate benchmark items in background thread."""
             try:
@@ -1441,6 +1768,9 @@ class EvolutionaryOptimizer:
                 # Inherit dwell counters so advancement rate-limiting works.
                 tmp_evaluator._refreshes_at_current_tier = live_complexity_dwell
                 tmp_evaluator._previous_size_tier_refreshes = live_size_dwell
+                # Propagate persistent floor overrides
+                tmp_evaluator._manual_benchmark_size_bytes = _floor_size
+                tmp_evaluator._manual_complexity_pct = _floor_cpx
                 # Give the tmp evaluator the live items so prev_avg_size > 0
                 # and the bidirectional growth limiter is not bypassed.
                 tmp_evaluator.benchmark_items = live_items
@@ -1498,6 +1828,26 @@ class EvolutionaryOptimizer:
             self.logger.warning(f"Prefetched benchmark collection failed: {e}")
         self._prefetch_benchmark_future = None
         return None
+
+    def set_manual_overrides(self, benchmark_size_kb: int | None = None,
+                             complexity_pct: int | None = None):
+        """Set manual FLOOR overrides for benchmark generation.
+
+        Delegates to ``BenchmarkItemEvaluator.set_manual_overrides()``.
+        Floors persist until explicitly cleared (pass None to clear).
+
+        Args:
+            benchmark_size_kb: Minimum per-item size in KB (None = clear).
+            complexity_pct: Minimum complexity 0-100 (None = clear).
+        """
+        if self.benchmark_evaluator is not None:
+            self.benchmark_evaluator.set_manual_overrides(
+                benchmark_size_kb=benchmark_size_kb,
+                complexity_pct=complexity_pct)
+            self._send_to_gui(
+                f"Manual floors set: "
+                f"size>={'auto' if benchmark_size_kb is None else f'{benchmark_size_kb}KB'}, "
+                f"complexity>={'auto' if complexity_pct is None else f'{complexity_pct}%'}")
 
     def continue_evolution(self, additional_gens: int = 100, switch_infinite: bool = False):
         """Resume evolution from the last generation without recreating the population.
@@ -1588,6 +1938,8 @@ class EvolutionaryOptimizer:
                     self.best_fitness_overall = 0.0
                     self._last_best_fitness = 0.0
                     self._stagnation_counter = 0
+                    self._diversity_collapse_counter = 0
+                    self._diversity_boost_active = False
                     self._enforce_gpu_safe_benchmark_size()
                     try:
                         bsize_new = self.benchmark_evaluator.get_total_benchmark_size_bytes()
@@ -1619,6 +1971,8 @@ class EvolutionaryOptimizer:
                         self.best_fitness_overall = 0.0
                         self._last_best_fitness = 0.0
                         self._stagnation_counter = 0
+                        self._diversity_collapse_counter = 0
+                        self._diversity_boost_active = False
                         self._enforce_gpu_safe_benchmark_size()
                         try:
                             bsize_new = self.benchmark_evaluator.get_total_benchmark_size_bytes()
@@ -1643,7 +1997,17 @@ class EvolutionaryOptimizer:
                 self._stagnation_counter += 1
             else:
                 self._stagnation_counter = 0
-            
+
+            # 2a. DIVERSITY COLLAPSE DETECTION (v0.9.10)
+            #     Compute a population diversity index from the method profiles
+            #     collected during _evaluate_population().  If diversity stays
+            #     low for several consecutive generations, flag a collapse that
+            #     triggers an early diversity boost in the breeding cycle.
+            try:
+                self._detect_diversity_collapse(current_gen_display)
+            except Exception as e_div:
+                self.logger.warning(f"Diversity detection error (non-fatal): {e_div}")
+
             # Detect fitness improvement for next gen's adaptive refresh
             _fitness_improved_recently = (best_fit > _prev_best_fitness + 0.1) and best_fit > 0
             _prev_best_fitness = best_fit
@@ -1756,6 +2120,8 @@ class EvolutionaryOptimizer:
                                 self.best_fitness_overall = 0.0
                                 self._last_best_fitness = 0.0
                                 self._stagnation_counter = 0
+                                self._diversity_collapse_counter = 0
+                                self._diversity_boost_active = False
                                 self._enforce_gpu_safe_benchmark_size()
                                 try:
                                     bsize_new = self.benchmark_evaluator.get_total_benchmark_size_bytes()
@@ -1825,70 +2191,309 @@ class EvolutionaryOptimizer:
             except Exception as e_final:
                 self.logger.warning(f"Final checkpoint save failed: {e_final}")
 
+    # ------------------------------------------------------------------
+    # DIVERSITY COLLAPSE DETECTION (v0.9.10)
+    # ------------------------------------------------------------------
+    def _detect_diversity_collapse(self, gen: int) -> None:
+        """Compute a population diversity index and detect collapse.
+
+        Called once per generation AFTER evaluation and fitness-based
+        stagnation detection.  The diversity index combines two signals:
+
+        1. **Method spread** — How evenly distributed are compression
+           methods across the population?  Measured via the normalised
+           Shannon entropy of the average method profile.  Entropy = 0
+           when every agent uses the same method; entropy = 1 when usage
+           is perfectly uniform.
+
+        2. **Method dominance** — Does any single method account for
+           more than ``DIVERSITY_MAX_METHOD_DOMINANCE`` of the aggregate
+           usage?  This catches cases where entropy is technically OK
+           (several methods exist) but one dominates overwhelmingly.
+
+        The diversity index is the method spread (Shannon entropy).
+        Collapse is declared when EITHER:
+          - diversity_index < DIVERSITY_MIN_INDEX for
+            DIVERSITY_COLLAPSE_GENERATIONS consecutive gens, OR
+          - max method dominance > DIVERSITY_MAX_METHOD_DOMINANCE
+            for DIVERSITY_COLLAPSE_GENERATIONS consecutive gens.
+
+        When collapse is detected, ``_diversity_boost_active`` is set
+        True for the upcoming breeding cycle.  The breeding cycle reads
+        this flag and applies more aggressive mutation / heritage
+        injection.
+
+        When diversity recovers above the threshold, the counter resets
+        and ``_diversity_boost_active`` is cleared.
+        """
+        if not self._generation_method_history:
+            # No method profile data yet (gen 0 or evaluation failed)
+            self._diversity_boost_active = False
+            return
+
+        # Use the LATEST generation's average method profile
+        latest_profile = self._generation_method_history[-1]
+        if not latest_profile:
+            self._diversity_boost_active = False
+            return
+
+        # --- Shannon entropy (normalised to 0.0–1.0) ---
+        total_usage = sum(latest_profile.values())
+        if total_usage < 1e-12:
+            diversity_index = 0.0
+            max_dominance = 1.0
+            dominant_method = 'none'
+        else:
+            proportions = [v / total_usage for v in latest_profile.values()]
+            # Shannon entropy: -Σ p*log2(p),  normalise by log2(N)
+            entropy = 0.0
+            for p in proportions:
+                if p > 1e-12:
+                    entropy -= p * math.log2(p)
+            n_methods = len(proportions)
+            max_entropy = math.log2(n_methods) if n_methods > 1 else 1.0
+            diversity_index = entropy / max_entropy if max_entropy > 0 else 0.0
+
+            # --- Method dominance ---
+            max_dominance = max(proportions) if proportions else 0.0
+            dominant_method = max(latest_profile, key=latest_profile.get, default='none')
+
+        # Store for metrics / GUI
+        self._last_diversity_index = round(diversity_index, 4)
+        self._last_method_dominance = round(max_dominance, 4)
+        self._last_dominant_method = dominant_method
+
+        # Track rolling history (bounded to _max_history_length)
+        self._diversity_index_history.append(diversity_index)
+        if len(self._diversity_index_history) > self._max_history_length:
+            self._diversity_index_history = self._diversity_index_history[-self._max_history_length:]
+
+        # --- Collapse detection ---
+        low_diversity = diversity_index < self.DIVERSITY_MIN_INDEX
+        high_dominance = max_dominance > self.DIVERSITY_MAX_METHOD_DOMINANCE
+
+        if low_diversity or high_dominance:
+            self._diversity_collapse_counter += 1
+        else:
+            # Diversity recovered — reset
+            if self._diversity_collapse_counter > 0:
+                self.logger.info(
+                    f"Gen {gen}: Diversity recovered (index={diversity_index:.3f}, "
+                    f"dominance={max_dominance:.1%} '{dominant_method}') — "
+                    f"collapse counter reset.")
+            self._diversity_collapse_counter = 0
+            self._diversity_boost_active = False
+            return
+
+        # Check if collapse threshold reached
+        if self._diversity_collapse_counter >= self.DIVERSITY_COLLAPSE_GENERATIONS:
+            if not self._diversity_boost_active:
+                # First time crossing threshold — log the trigger
+                reason_parts = []
+                if low_diversity:
+                    reason_parts.append(
+                        f"diversity index {diversity_index:.3f} < {self.DIVERSITY_MIN_INDEX}")
+                if high_dominance:
+                    reason_parts.append(
+                        f"method '{dominant_method}' dominates at {max_dominance:.1%} "
+                        f"> {self.DIVERSITY_MAX_METHOD_DOMINANCE:.0%}")
+                reason = ' AND '.join(reason_parts)
+                self._send_to_gui(
+                    f"Gen {gen}: \u26a0\ufe0f DIVERSITY COLLAPSE detected "
+                    f"({self._diversity_collapse_counter} consecutive gens) — "
+                    f"{reason}. Activating diversity boost!",
+                    "warning",
+                )
+                self.logger.warning(
+                    f"Gen {gen}: Diversity collapse triggered — {reason}. "
+                    f"counter={self._diversity_collapse_counter}, "
+                    f"stagnation_counter={self._stagnation_counter}")
+            self._diversity_boost_active = True
+        else:
+            # Below threshold but counting up — not yet triggered
+            self._diversity_boost_active = False
+
     def _run_breeding_cycle(self, gen):
         """Breed the next generation with lineage-aware novel method inheritance,
-        gradual evolution phases, and agent type specialization.
+        incremental recipe evolution, and agent type specialization.
 
-        Key design decisions (v0.9.7):
+        Key design decisions:
 
-        1. **"Grandpapi" lineage memory**
+        1. **"Grandpapi" lineage memory** (v0.9.7)
            Each child merges heritage dicts from both parents.  Because the
            parent's heritage already contains *their* ancestors' entries, the
            child transitively inherits tricks from grandparents, great-
            grandparents, etc. without an external lineage DB.
 
-        2. **Lineage-aware novel method selection**
-           When deciding which novel pipeline to give a child, we check the
-           merged heritage for the highest-fitness trick and rebuild that
-           pipeline with high probability (``HERITAGE_REUSE_PROB``).  This
-           ensures proven family methods are passed down, not discarded.
+        2. **Incremental recipe evolution** (v0.9.9)
+           Novel methods are NOT randomly generated.  All agents start with
+           a simple base recipe (RLE-only) and build complexity through
+           **one small mutation per generation**.  After evaluation, if the
+           mutation improved fitness it is recorded as a proven improvement
+           in the recipe's log.  Children inherit ALL accumulated improvements.
 
-        3. **Gradual evolution phases**
-           Gen 0-20:  Heavily favour known/scaffolded methods (low novel %).
-           Gen 21-50: Transition — increasing novel method creation.
-           Gen 51+:   Full novelty — novel methods dominate breeding.
+        3. **Cross-family sub-novel methods** (v0.9.9)
+           When parents have structurally different recipes (different step
+           types), a sub-novel method is created by blending the best-
+           contributing steps from each at random blend strengths.
 
-        4. **Agent type split + cross-type breeding**
+        4. **Maturity gating** (v0.9.9)
+           Only recipes with >=2 proven improvements count as genuinely
+           "novel" in metrics / snapshots.  This prevents counting every
+           agent's baseline RLE recipe as a novel method.
+
+        5. **Agent type split + cross-type breeding** (v0.9.7)
            Children inherit the type of their dominant parent (higher fitness),
-           but cross-type breeds (compression × anti_corruption) are allowed
-           and encouraged (they inherit traits from both specializations).
+           but cross-type breeds (compression × anti_corruption) are allowed.
 
-        5. **Both children from apply_crossover are used**
+        6. **Both children from apply_crossover are used**
            ``apply_crossover`` returns two children (child1_ai, child2_ai).
            Both are wrapped as EvolvingAgents and added to next_pop (space
-           permitting).  The first child gets the dominant parent's type
-           preference, the second child gets the recessive parent's type.
+           permitting).
 
-        6. **Strict 50/50 type balance via budget**
-           Instead of a weak nudge after the fact, the breeding loop
-           pre-computes comp_budget and anti_budget (accounting for elites)
-           and assigns types based on remaining budget.  This guarantees
-           the population stays at exactly 50/50 ± 1 every generation.
+        7. **Strict 50/50 type balance via budget**
+           Pre-computes comp_budget and anti_budget (accounting for elites)
+           and assigns types based on remaining budget.
 
-        7. **Per-type elitism**
-           Top-1 agent from EACH type is kept as elite (2 total) so
-           neither sub-population is wiped in a single generation.
+        8. **Per-type elitism**
+           Top-1 agent from EACH type is kept as elite (2 total).
         """
         STAGNATION_THRESHOLD = 5  # gens without improvement → trigger hypermutation
         HYPERMUTATION_FRACTION = 0.2  # fraction of non-elite children that get hypermutation
         use_hypermutation = self._stagnation_counter >= STAGNATION_THRESHOLD
 
-        if use_hypermutation:
-            self._send_to_gui(f"Gen {gen}: Stagnation detected ({self._stagnation_counter} gens) — applying hypermutation to {HYPERMUTATION_FRACTION*100:.0f}% of offspring.")
+        # --- v0.9.10: DIVERSITY BOOST ---
+        # Diversity boost is a lighter, earlier intervention that kicks in
+        # when population method diversity collapses — even if fitness is
+        # still technically improving.  It's additive with the existing
+        # fitness-stagnation hypermutation.
+        #
+        # When BOTH triggers fire simultaneously, the diversity boost
+        # parameters take precedence (they're more aggressive).
+        use_diversity_boost = getattr(self, '_diversity_boost_active', False)
 
-        # --- Gradual evolution: compute novel method probability for this gen ---
-        # Gen 0-20:  5-15% novel chance  (scaffold/known methods dominate)
-        # Gen 21-50: 15-60% novel chance (transition phase)
-        # Gen 51+:   60-80% novel chance (full novelty)
-        if gen <= 20:
-            novel_method_prob = 0.05 + (gen / 20.0) * 0.10   # 5% → 15%
-        elif gen <= 50:
-            novel_method_prob = 0.15 + ((gen - 20) / 30.0) * 0.45  # 15% → 60%
-        else:
-            novel_method_prob = min(0.80, 0.60 + (gen - 50) * 0.002)  # 60% → 80% cap
+        # Effective mutation parameters for this breeding cycle
+        effective_hypermut_fraction = HYPERMUTATION_FRACTION
+        effective_mutation_rate = self.base_mutation_rate
+        effective_noise_rate = 0.1   # Q-table noise probability
+        effective_noise_std  = 0.05  # Q-table noise standard deviation
 
-        # Probability of inheriting a proven trick from heritage vs generating fresh
-        HERITAGE_REUSE_PROB = 0.65
+        if use_diversity_boost and use_hypermutation:
+            # Both triggers — maximum intervention
+            effective_hypermut_fraction = self.DIVERSITY_BOOST_HYPERMUTATION_FRACTION
+            effective_mutation_rate = self.DIVERSITY_BOOST_MUTATION_RATE
+            effective_noise_rate = self.DIVERSITY_BOOST_QTABLE_NOISE_RATE
+            effective_noise_std  = self.DIVERSITY_BOOST_QTABLE_NOISE_STD
+            self._send_to_gui(
+                f"Gen {gen}: ⚠️ DUAL TRIGGER — stagnation ({self._stagnation_counter} gens) "
+                f"+ diversity collapse (index={self._last_diversity_index:.3f}, "
+                f"'{self._last_dominant_method}' @ {self._last_method_dominance:.0%}) — "
+                f"maximum mutation boost active!",
+                "warning",
+            )
+        elif use_diversity_boost:
+            # Diversity collapse only — early intervention
+            effective_hypermut_fraction = self.DIVERSITY_BOOST_HYPERMUTATION_FRACTION
+            effective_mutation_rate = self.DIVERSITY_BOOST_MUTATION_RATE
+            effective_noise_rate = self.DIVERSITY_BOOST_QTABLE_NOISE_RATE
+            effective_noise_std  = self.DIVERSITY_BOOST_QTABLE_NOISE_STD
+            self._send_to_gui(
+                f"Gen {gen}: 🧬 Diversity boost active "
+                f"(index={self._last_diversity_index:.3f}, "
+                f"'{self._last_dominant_method}' @ {self._last_method_dominance:.0%}) — "
+                f"elevated mutation to {effective_hypermut_fraction*100:.0f}% of offspring.",
+            )
+        elif use_hypermutation:
+            # Classic fitness-stagnation only
+            effective_noise_rate = 0.2
+            effective_noise_std  = 0.1
+            self._send_to_gui(
+                f"Gen {gen}: Stagnation detected ({self._stagnation_counter} gens) — "
+                f"applying hypermutation to {HYPERMUTATION_FRACTION*100:.0f}% of offspring.",
+            )
+
+        # --- Diversity check: detect gene-pool collapse ---
+        # Count living gene pools PER TYPE (compression & anti_corruption)
+        # independently.  Founders are injected to ensure BOTH scoring
+        # dimensions (compression rate & robustness) always have competing
+        # gene pools.  Even if all compression pools collapse to one lineage,
+        # robustness pools may still be diverse — and vice versa.
+        MIN_GENE_POOLS = 3               # minimum living pools before founders spawn
+        FOUNDER_DOMINANCE_THRESHOLD = 0.7 # if one pool has >= 70% of its type → inject founders
+        MAX_FOUNDER_FRACTION = 0.10       # at most 10% of pop_size are founders (across both types)
+        comp_founders_to_inject = 0
+        anti_founders_to_inject = 0
+        if self.population and len(self.population) >= 4:
+            # Quick lineage-root scan (same logic as webui_server gene pool)
+            _root_cache: dict[str, str] = {}
+            _pmap: dict[str, list[str]] = {}
+            for a in self.population:
+                _pmap[a.agent_id] = list(getattr(a, 'parent_ids', []))
+
+            def _find_root(aid: str, visited: set | None = None) -> str:
+                if aid in _root_cache:
+                    return _root_cache[aid]
+                if visited is None:
+                    visited = set()
+                if aid in visited:
+                    return aid
+                visited.add(aid)
+                parents = _pmap.get(aid, [])
+                if not parents:
+                    _root_cache[aid] = aid
+                    return aid
+                root = _find_root(parents[0], visited)
+                _root_cache[aid] = root
+                return root
+
+            # Build per-type pool counts
+            comp_pool_counts: dict[str, int] = {}   # root -> count of compression agents
+            anti_pool_counts: dict[str, int] = {}   # root -> count of anti_corruption agents
+            for a in self.population:
+                root = _find_root(a.agent_id)
+                atype = getattr(a, 'agent_type', 'compression')
+                if atype == 'anti_corruption':
+                    anti_pool_counts[root] = anti_pool_counts.get(root, 0) + 1
+                else:
+                    comp_pool_counts[root] = comp_pool_counts.get(root, 0) + 1
+
+            pop_size = len(self.population)
+            max_total_founders = max(1, int(pop_size * MAX_FOUNDER_FRACTION))
+
+            def _check_type_diversity(pool_counts: dict, type_label: str) -> int:
+                """Return how many founders to inject for a given type."""
+                num_pools = len(pool_counts)
+                type_pop = sum(pool_counts.values())
+                if type_pop == 0:
+                    return 1  # type has 0 agents — inject at least one founder
+                biggest = max(pool_counts.values()) if pool_counts else 0
+                dominance = biggest / type_pop if type_pop > 0 else 0.0
+                if num_pools < MIN_GENE_POOLS or dominance >= FOUNDER_DOMINANCE_THRESHOLD:
+                    needed = max(MIN_GENE_POOLS - num_pools, 1)
+                    if dominance >= 0.9:
+                        needed = max(needed, 3)
+                    elif dominance >= FOUNDER_DOMINANCE_THRESHOLD:
+                        needed = max(needed, 2)
+                    return needed
+                return 0
+
+            comp_founders_to_inject = _check_type_diversity(comp_pool_counts, 'compression')
+            anti_founders_to_inject = _check_type_diversity(anti_pool_counts, 'robustness')
+
+            # Cap total founders
+            total_founders = comp_founders_to_inject + anti_founders_to_inject
+            if total_founders > max_total_founders:
+                # Split budget proportionally
+                ratio = max_total_founders / total_founders
+                comp_founders_to_inject = max(1, int(comp_founders_to_inject * ratio))
+                anti_founders_to_inject = max(1, int(anti_founders_to_inject * ratio))
+
+            if comp_founders_to_inject > 0 or anti_founders_to_inject > 0:
+                self._send_to_gui(
+                    f"Gen {gen}: Gene pool diversity check — "
+                    f"compression pools: {len(comp_pool_counts)} ({comp_founders_to_inject} founders), "
+                    f"robustness pools: {len(anti_pool_counts)} ({anti_founders_to_inject} founders)."
+                )
 
         next_pop = []
         # --- Elitism: keep top 2 from EACH type so neither type is wiped ---
@@ -1912,6 +2517,85 @@ class EvolutionaryOptimizer:
         _anti_placed  = sum(1 for a in next_pop if getattr(a, 'agent_type', 'compression') == 'anti_corruption')
         comp_budget   = half - _comp_placed
         anti_budget   = (self.population_size - half) - _anti_placed
+
+        # --- Inject founders for new gene pools when diversity is low ---
+        # Founders have NO parent_ids (making them new roots), wiped heritage,
+        # a fresh base recipe, and a heavily scrambled Q-table so they bring
+        # genuine genetic diversity.  They are seeded from a random existing
+        # agent's Q-table (then scrambled) so they aren't completely naive.
+        #
+        # Founders are injected PER TYPE so that both compression-scored and
+        # robustness-scored gene pools can maintain diversity independently.
+        # A robustness founder becomes the root of a new robustness-optimized
+        # lineage, ensuring the gene pool never loses competition on that axis.
+        _founder_plan = []  # list of (founder_index, type)
+        fi = 0
+        for _ in range(comp_founders_to_inject):
+            if comp_budget > 0:
+                _founder_plan.append((fi, 'compression'))
+                comp_budget -= 1
+                fi += 1
+        for _ in range(anti_founders_to_inject):
+            if anti_budget > 0:
+                _founder_plan.append((fi, 'anti_corruption'))
+                anti_budget -= 1
+                fi += 1
+
+        for fi_idx, founder_type in _founder_plan:
+            if len(next_pop) >= self.population_size:
+                break
+
+            # Pick a random agent OF THE SAME TYPE as seed (if possible)
+            same_type_agents = [a for a in self.population
+                                if getattr(a, 'agent_type', 'compression') == founder_type]
+            seed_agent = random.choice(same_type_agents) if same_type_agents else random.choice(self.population)
+            try:
+                founder_ai = seed_agent.puffin_ai.clone_core_model()
+            except Exception:
+                continue
+
+            # Heavy Q-table scramble: 50% of entries get large random noise
+            if hasattr(founder_ai, 'q_table') and founder_ai.q_table is not None:
+                noise_mask = np.random.random(founder_ai.q_table.shape) < 0.50
+                noise = np.random.normal(0, 0.3, founder_ai.q_table.shape)
+                founder_ai.q_table[noise_mask] += noise[noise_mask]
+
+            # Randomize learning rate and exploration for diversity
+            if hasattr(founder_ai, 'learning_rate'):
+                founder_ai.learning_rate = random.uniform(0.01, 0.3)
+            if hasattr(founder_ai, 'exploration_rate'):
+                founder_ai.exploration_rate = random.uniform(0.3, 0.8)
+
+            founder = EvolvingAgent(
+                founder_ai,
+                agent_id=f"gen{gen}_founder_{fi_idx}",
+                generation_born=gen,
+                parent_ids=[],       # ← no parents = new gene pool root
+                agent_type=founder_type,
+                heritage=[],         # ← clean slate — no ancestral tricks
+            )
+
+            # Apply hypermutation so founders are genuinely different
+            apply_hypermutation(founder)
+
+            # Fresh recipe for the new lineage
+            if RecipeEvolver is not None and get_novel_generator:
+                try:
+                    novel_gen = get_novel_generator()
+                    founder_recipe = RecipeEvolver.create_base_recipe(generation=gen)
+                    method = novel_gen.build_method_from_recipe(
+                        founder_recipe,
+                        method_name=f"gen{gen}_founder_{fi_idx}_recipe",
+                    )
+                    founder.puffin_ai.novel_method = method
+                    founder.puffin_ai._novel_compress_fn = method.compress_fn
+                    founder.puffin_ai._novel_decompress_fn = method.decompress_fn
+                    founder.novel_recipe = founder_recipe
+                except Exception:
+                    pass
+
+            self._sanitize_agent(founder)
+            next_pop.append(founder)
 
         child_index = 0
         while len(next_pop) < self.population_size:
@@ -1992,77 +2676,107 @@ class EvolutionaryOptimizer:
                 )
 
                 # --- MUTATION ---
-                if use_hypermutation and random.random() < HYPERMUTATION_FRACTION:
+                # v0.9.10: Uses effective parameters computed at top of
+                # _run_breeding_cycle() — accounts for both fitness-stagnation
+                # hypermutation AND diversity-boost (or both together).
+                if (use_hypermutation or use_diversity_boost) and random.random() < effective_hypermut_fraction:
                     apply_hypermutation(child)
                 else:
-                    apply_mutations(child, {'base_rate': self.base_mutation_rate})
+                    apply_mutations(child, {'base_rate': effective_mutation_rate})
 
-                # Q-Table noise
+                # Q-Table noise — elevated during stagnation or diversity collapse
                 if hasattr(child, 'puffin_ai') and hasattr(child.puffin_ai, 'q_table'):
-                    noise_rate = 0.2 if use_hypermutation else 0.1
-                    noise_std = 0.1 if use_hypermutation else 0.05
-                    mutation_mask = np.random.random(child.puffin_ai.q_table.shape) < noise_rate
-                    noise = np.random.normal(0, noise_std, child.puffin_ai.q_table.shape)
+                    mutation_mask = np.random.random(child.puffin_ai.q_table.shape) < effective_noise_rate
+                    noise = np.random.normal(0, effective_noise_std, child.puffin_ai.q_table.shape)
                     child.puffin_ai.q_table[mutation_mask] += noise[mutation_mask]
 
-                # --- Novel method: lineage-aware inheritance + gradual evolution ---
-                if random.random() < novel_method_prob:
-                    novel_assigned = False
+                # --- v0.9.9 + v0.9.10: INCREMENTAL RECIPE EVOLUTION ---
+                # Instead of randomly generating novel methods, recipes evolve
+                # through small partial mutations.  Children inherit their
+                # parent's recipe (with all proven improvements) and apply ONE
+                # small mutation.  When parents have structurally different
+                # recipes, create a sub-novel method that blends both families.
+                #
+                # v0.9.10: DORMANT RE-EMERGENCE — 5% chance per child to
+                # resurrect a dead recipe from the graveyard instead of
+                # normal mutation.  This models recessive genes resurfacing
+                # after generations of dormancy.
+                #
+                # v0.9.10: STRENGTH-WEIGHTED BREEDING — parents with higher
+                # recipe strength are more likely to pass on their recipe.
+                if RecipeEvolver is not None and get_novel_generator:
+                    try:
+                        novel_gen = get_novel_generator()
+                        dom_recipe = getattr(dominant_parent, 'novel_recipe', None)
+                        rec_recipe = getattr(recessive_parent, 'novel_recipe', None)
 
-                    # Try to inherit a proven trick from heritage ("grandpapi" reuse)
-                    if merged_heritage and random.random() < HERITAGE_REUSE_PROB:
-                        best_trick = max(
-                            merged_heritage,
-                            key=lambda e: e.get("fitness_when_learned", 0.0),
+                        # --- v0.9.10: Dormant re-emergence check ---
+                        _REEMERGENCE_CHANCE = 0.05  # 5% chance per child
+                        graveyard_recipe = None
+                        if (self._method_registry is not None
+                                and random.random() < _REEMERGENCE_CHANCE):
+                            graveyard_recipe = self._method_registry.pick_graveyard_recipe()
+
+                        if graveyard_recipe is not None:
+                            # Resurrect the distant gene!
+                            child_recipe = RecipeEvolver.resurrect_recipe(
+                                graveyard_recipe, generation=gen,
+                            )
+                            # Update registry with the resurrection
+                            if self._method_registry:
+                                self._method_registry.register(child_recipe)
+                        elif dom_recipe is not None and rec_recipe is not None:
+                            # Check if parents have structurally different recipes
+                            # → cross-family combination (sub-novel method)
+                            if RecipeEvolver.should_combine(dom_recipe, rec_recipe):
+                                import copy as _copy
+                                child_recipe = RecipeEvolver.combine_recipes(
+                                    dom_recipe, rec_recipe, generation=gen,
+                                )
+                            else:
+                                # Same family → inherit strength-weighted parent + mutate
+                                # v0.9.10: Pick the stronger parent's recipe
+                                import copy as _copy
+                                if rec_recipe.strength > dom_recipe.strength and random.random() < 0.3:
+                                    src_recipe = rec_recipe
+                                else:
+                                    src_recipe = dom_recipe
+                                child_recipe, change = RecipeEvolver.mutate_recipe(
+                                    src_recipe, generation=gen,
+                                )
+                                # Inherit parent strength with slight decay
+                                child_recipe.strength = src_recipe.strength * 0.95
+                                child._pending_recipe_change = change
+                        elif dom_recipe is not None:
+                            import copy as _copy
+                            child_recipe, change = RecipeEvolver.mutate_recipe(
+                                dom_recipe, generation=gen,
+                            )
+                            child_recipe.strength = dom_recipe.strength * 0.95
+                            child._pending_recipe_change = change
+                        else:
+                            # No parent recipe — create a base recipe
+                            child_recipe = RecipeEvolver.create_base_recipe(generation=gen)
+
+                        # Build closures from the child's recipe
+                        method = novel_gen.build_method_from_recipe(
+                            child_recipe,
+                            method_name=f"gen{gen}_recipe_{child_index}",
                         )
-                        try:
-                            from ..novel_compression_generator import NovelCompressionGenerator
-                            gen_instance = NovelCompressionGenerator()
-                            pipeline_name = best_trick.get("pipeline", "rle_only")
-                            cfn, dfn = gen_instance._build_pipeline(
-                                pipeline_name,
-                                discovery_seed=best_trick.get("discovery_seed"),
-                                rle_min_run=best_trick.get("rle_min_run", 3),
-                            )
-                            from ..compression_method_registry import CompressionMethod, CompressionLanguage
-                            method = CompressionMethod(
-                                name=f"gen{gen}_heritage_{child_index}",
-                                language=CompressionLanguage.HYBRID,
-                                compress_fn=cfn,
-                                decompress_fn=dfn,
-                                description=f"Inherited from ancestor {best_trick.get('ancestor_id', '?')} (gen {best_trick.get('generation', '?')})",
-                                author="heritage_inheritance",
-                                is_novelty=True,
-                                metadata={
-                                    "pipeline": pipeline_name,
-                                    "discovery_seed": best_trick.get("discovery_seed"),
-                                    "rle_min_run": best_trick.get("rle_min_run", 3),
-                                    "steps": [],
-                                    "inherited_from": best_trick.get("ancestor_id", ""),
-                                },
-                            )
-                            child.puffin_ai.novel_method = method
-                            child.puffin_ai._novel_compress_fn = cfn
-                            child.puffin_ai._novel_decompress_fn = dfn
-                            novel_assigned = True
-                        except Exception:
-                            pass  # Fall through to fresh generation
-
-                    # If heritage reuse didn't happen, generate a fresh novel method
-                    if not novel_assigned and get_novel_generator:
-                        try:
-                            novel_gen = get_novel_generator()
-                            method = novel_gen.generate_novelty_method(
-                                method_name=f"gen{gen}_novel_{child_index}",
-                                pattern_combo_size=random.randint(1, 3)
-                            )
-                            child.puffin_ai.novel_method = method
-                            child.puffin_ai._novel_compress_fn = method.compress_fn
-                            child.puffin_ai._novel_decompress_fn = method.decompress_fn
-                        except Exception:
-                            pass
+                        child.puffin_ai.novel_method = method
+                        child.puffin_ai._novel_compress_fn = method.compress_fn
+                        child.puffin_ai._novel_decompress_fn = method.decompress_fn
+                        child.novel_recipe = child_recipe
+                    except Exception:
+                        # Fallback: copy dominant parent's method as-is
+                        if hasattr(dominant_parent.puffin_ai, '_novel_compress_fn') and dominant_parent.puffin_ai._novel_compress_fn:
+                            child.puffin_ai.novel_method = dominant_parent.puffin_ai.novel_method
+                            child.puffin_ai._novel_compress_fn = dominant_parent.puffin_ai._novel_compress_fn
+                            child.puffin_ai._novel_decompress_fn = dominant_parent.puffin_ai._novel_decompress_fn
+                            import copy as _copy
+                            child.novel_recipe = _copy.deepcopy(getattr(dominant_parent, 'novel_recipe', None))
                 else:
-                    # Gradual evolution: early gens keep parent's novel method
+                    # RecipeEvolver not available — old-style parent copy
                     if hasattr(dominant_parent.puffin_ai, '_novel_compress_fn') and dominant_parent.puffin_ai._novel_compress_fn:
                         child.puffin_ai.novel_method = dominant_parent.puffin_ai.novel_method
                         child.puffin_ai._novel_compress_fn = dominant_parent.puffin_ai._novel_compress_fn
@@ -2104,6 +2818,126 @@ class EvolutionaryOptimizer:
                 generation=gen,
                 population_size=pop_size,
             )
+
+    # ------------------------------------------------------------------
+    # Recipe Vault — persist top 5 novel method recipes across runs
+    # ------------------------------------------------------------------
+    _RECIPE_VAULT_MAX = 5
+
+    def _get_recipe_vault_path(self) -> str:
+        """Return the path to the recipe vault JSON file."""
+        try:
+            from ..config import DATA_DIR
+            return os.path.join(DATA_DIR, "recipe_vault.json")
+        except ImportError:
+            return os.path.join("data", "recipe_vault.json")
+
+    def _save_recipe_vault(self, generation: int = 0):
+        """Scan the current population for the top 5 mature novel method
+        recipes (ranked by ``best_fitness``) and save them to disk.
+
+        The vault file is overwritten every time — it always reflects the
+        best recipes discovered so far across all runs.  Existing vault
+        entries that still outperform the current population are preserved.
+
+        Called after recipe improvement checks each generation.
+        """
+        if not self.population:
+            return
+
+        import datetime as _dt
+
+        # 1. Collect candidate recipes from the live population
+        candidates: list[dict] = []
+        for agent in self.population:
+            recipe = getattr(agent, 'novel_recipe', None)
+            if recipe is None:
+                continue
+            # Only vault recipes that have at least 1 proven improvement
+            if not recipe.improvement_log:
+                continue
+            agent_type = getattr(agent, 'agent_type', 'compression')
+            if agent_type == 'anti_corruption':
+                score = getattr(agent, 'robustness_fitness', 0.0) or 0.0
+            else:
+                score = agent.get_fitness() or 0.0
+            # Use the better of recipe.best_fitness and live score
+            effective_score = max(recipe.best_fitness, score)
+            candidates.append({
+                'recipe': recipe.to_dict(),
+                'best_fitness': round(effective_score, 6),
+                'agent_type': agent_type,
+                'generation_discovered': recipe.generation_created,
+                'last_updated': _dt.datetime.now().isoformat(),
+            })
+
+        # 2. Load existing vault entries (survivors from prior runs)
+        vault_path = self._get_recipe_vault_path()
+        existing: list[dict] = []
+        if os.path.isfile(vault_path):
+            try:
+                with open(vault_path, 'r', encoding='utf-8') as fv:
+                    data = json.load(fv)
+                existing = data.get('recipes', [])
+            except Exception:
+                existing = []
+
+        # 3. Merge: combine existing vault + new candidates
+        all_entries = existing + candidates
+
+        # Deduplicate by recipe step_types signature — keep the one with
+        # the highest best_fitness for each unique recipe family.
+        seen: dict[str, dict] = {}  # family_key -> best entry
+        for entry in all_entries:
+            rd = entry.get('recipe', {})
+            steps = rd.get('steps', [])
+            family_key = '_'.join(s.get('step_type', '?') for s in steps) or 'empty'
+            prev = seen.get(family_key)
+            if prev is None or entry.get('best_fitness', 0) > prev.get('best_fitness', 0):
+                seen[family_key] = entry
+
+        # 4. Rank by best_fitness and keep top N
+        ranked = sorted(seen.values(), key=lambda e: e.get('best_fitness', 0), reverse=True)
+        top_entries = ranked[:self._RECIPE_VAULT_MAX]
+
+        # 5. Write vault file
+        vault_data = {
+            'version': 1,
+            'updated_at': _dt.datetime.now().isoformat(),
+            'generation': generation,
+            'recipes': top_entries,
+        }
+        try:
+            os.makedirs(os.path.dirname(vault_path), exist_ok=True)
+            with open(vault_path, 'w', encoding='utf-8') as fv:
+                json.dump(vault_data, fv, indent=2)
+        except Exception as e:
+            self.logger.debug(f"Recipe vault save failed (non-fatal): {e}")
+
+    def _load_recipe_vault(self) -> list:
+        """Load saved recipes from the vault file.
+
+        Returns a list of ``NovelMethodRecipe`` objects (may be empty).
+        """
+        vault_path = self._get_recipe_vault_path()
+        if not os.path.isfile(vault_path):
+            return []
+        try:
+            with open(vault_path, 'r', encoding='utf-8') as fv:
+                data = json.load(fv)
+            entries = data.get('recipes', [])
+            recipes = []
+            for entry in entries:
+                rd = entry.get('recipe')
+                if rd is None:
+                    continue
+                if NovelMethodRecipe is not None:
+                    recipe = NovelMethodRecipe.from_dict(rd)
+                    recipes.append(recipe)
+            return recipes
+        except Exception as e:
+            self.logger.debug(f"Recipe vault load failed (non-fatal): {e}")
+            return []
 
     def _rotate_auto_checkpoints(self):
         """Delete oldest auto-checkpoints beyond ``_max_auto_checkpoints``.

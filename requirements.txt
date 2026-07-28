@@ -9,6 +9,9 @@ flask
 flask-cors
 
 # ── Optional: GPU acceleration (requires CUDA 12.x toolkit) ─────────────────
+# Left commented so `pip install -r requirements.txt` stays CPU-friendly.
+# start.sh / start.bat auto-install cupy-cuda12x on hosts where a CUDA GPU is
+# detected, so GPU acceleration is enabled without editing this file.
 # cupy-cuda12x
 
 # ── Optional: Neural-network agents (Dueling DQN) ───────────────────────────

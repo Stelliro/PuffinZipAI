@@ -270,6 +270,26 @@ else
     log "Dependencies already installed"
 fi
 
+# ── 3b. Ensure CuPy on GPU hosts (self-heals pre-existing venvs) ─────────────
+# The dependency block above only installs CuPy on a "first run".  A venv that
+# predates the GPU-RLE feature (or was created before CuPy was added) skips it
+# entirely, leaving the GPU idle even though hardware is present.  This
+# standalone check runs every launch: whenever a CUDA GPU is detected but CuPy
+# is not importable, install it.  It is a fast no-op once CuPy is present.
+if [[ "$GPU_COUNT" -gt 0 ]]; then
+    if python -c "import cupy" 2>/dev/null; then
+        log "CuPy present — GPU acceleration available"
+    else
+        info "GPU detected but CuPy missing — installing cupy-cuda12x for GPU acceleration..."
+        python -m pip install cupy-cuda12x -q 2>/dev/null || true
+        if python -c "import cupy" 2>/dev/null; then
+            log "CuPy installed — GPU acceleration enabled"
+        else
+            warn "CuPy install failed — agents will run on CPU (GPU RLE disabled)"
+        fi
+    fi
+fi
+
 # ── 4. Verify imports ───────────────────────────────────────────────────────
 info "Verifying PuffinZipAI imports..."
 python -c "

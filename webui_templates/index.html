@@ -6,7 +6,8 @@
     <title>PuffinZipAI - Web UI</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='css/themes.css') }}">
-    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <script src="{{ url_for('static', filename='js/chart.umd.min.js') }}"></script>
+    <script>if(typeof Chart==='undefined'){var s=document.createElement('script');s.src='https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js';document.head.appendChild(s);}</script>
     <script>window.PUFFIN_PREFIX = '{{ url_prefix|default("") }}';</script>
 </head>
 <body>
@@ -135,14 +136,30 @@
                 <div class="sidebar-card">
                     <div class="sidebar-card-header">🛡️ Anti-Corruption &amp; Decompression</div>
                     <div class="sidebar-card-body">
+                        <!-- Independent anti-corruption progression bar (0-100),
+                             gated on robustness — a separate scoring track from
+                             the compression complexity bar above. -->
+                        <div class="complexity-bar-container">
+                            <div class="complexity-bar corruption-bar" id="corruption-bar" style="width: 2%;">
+                                <span id="corruption-bar-label">0%</span>
+                            </div>
+                        </div>
                         <div class="complexity-details">
                             <div class="detail-row">
                                 <span>Training Phase</span>
                                 <span id="detail-training-phase" class="detail-val">—</span>
                             </div>
                             <div class="detail-row">
+                                <span>Corruption Progress</span>
+                                <span id="detail-corruption-progress" class="detail-val">0 / 100</span>
+                            </div>
+                            <div class="detail-row">
                                 <span>Corruption Level</span>
                                 <span id="detail-corruption-level" class="detail-val">0.000</span>
+                            </div>
+                            <div class="detail-row">
+                                <span>Recovery Rate (gate)</span>
+                                <span id="detail-robustness-rate" class="detail-val">—</span>
                             </div>
                             <div class="detail-row">
                                 <span>Best Robustness</span>
@@ -226,6 +243,50 @@
                             <label for="mutation-rate">Mut:</label>
                             <input type="range" id="mutation-rate" min="0" max="100" value="50" class="range-input">
                             <span id="mutation-rate-display" class="range-val">50%</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Manual Overrides -->
+                <div class="sidebar-card">
+                    <div class="sidebar-card-header">🎯 Difficulty Floor</div>
+                    <div class="sidebar-card-body compact-form">
+                        <div class="form-row">
+                            <label for="override-size-kb">Min Size (KB):</label>
+                            <input type="number" id="override-size-kb" min="1" max="10240" placeholder="auto" title="Minimum per-item benchmark size in KB (1-10240). AI can still exceed this.">
+                        </div>
+                        <div class="form-row">
+                            <label for="override-complexity">Min Complexity:</label>
+                            <input type="range" id="override-complexity" min="0" max="100" value="0" class="range-input" title="Minimum complexity % (0-100). AI can still exceed this via gold-standard gates.">
+                            <span id="override-complexity-display" class="range-val">auto</span>
+                        </div>
+                        <div class="btn-row">
+                            <button class="btn btn-sm btn-secondary" id="btn-apply-overrides" title="Set difficulty floor — AI will never go below these values">Set Floor</button>
+                            <button class="btn btn-sm btn-secondary" id="btn-clear-overrides" title="Remove floor (return to fully automatic)">Clear</button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Run Queue (sequential multi-override sweeps) -->
+                <div class="sidebar-card">
+                    <div class="sidebar-card-header">📊 Run Queue</div>
+                    <div class="sidebar-card-body compact-form">
+                        <div class="form-row" style="gap:4px;">
+                            <label for="rq-gens" style="min-width:30px;">Gen:</label>
+                            <input type="number" id="rq-gens" min="1" max="10000" value="100" style="width:60px;" title="Generations for this step">
+                            <label for="rq-size" style="min-width:24px;">KB:</label>
+                            <input type="number" id="rq-size" min="1" max="10240" placeholder="auto" style="width:55px;" title="Size floor (KB)">
+                            <label for="rq-cpx" style="min-width:20px;">C%:</label>
+                            <input type="number" id="rq-cpx" min="0" max="100" placeholder="auto" style="width:45px;" title="Complexity floor %">
+                        </div>
+                        <div class="btn-row">
+                            <button class="btn btn-sm btn-secondary" id="btn-rq-add" title="Add step to queue">+ Add Step</button>
+                            <button class="btn btn-sm btn-secondary" id="btn-rq-clear" title="Clear all queued steps">Clear</button>
+                        </div>
+                        <div id="rq-list" style="max-height:140px;overflow-y:auto;font-size:11px;margin-top:2px;"></div>
+                        <div id="rq-progress" style="display:none;font-size:11px;color:var(--primary-color);margin-top:4px;font-weight:600;"></div>
+                        <div class="btn-row" style="margin-top:4px;">
+                            <button class="btn btn-sm btn-primary" id="btn-rq-start" title="Run all queued steps sequentially">▶ Start Queue</button>
                         </div>
                     </div>
                 </div>

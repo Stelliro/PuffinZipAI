@@ -456,6 +456,8 @@ class AppState:
         self.current_best_robustness = 0.0
         self.current_training_phase = ''
         self.current_corruption_level = 0.0
+        self.current_corruption_value = 0
+        self.current_robustness_rate = 0.0
         self.current_decomp_mismatches = 0
         self.current_items_evaluated = 0
         self.current_successful_compressions = 0
@@ -471,6 +473,14 @@ class AppState:
         self.run_number = 0              # Current run number (incremented on fresh start)
         self.run_history = []            # List of archived run summaries
         self.completed_naturally = False  # True when training ended without stop
+        # --- Pending manual floor overrides (survive before optimizer exists) ---
+        self.pending_override_size_kb: int | None = None
+        self.pending_override_complexity_pct: int | None = None
+        # --- Run queue (sequential multi-override runs) ---
+        self.run_queue: list[dict] = []       # Steps still to execute
+        self.run_queue_total: int = 0          # Total steps when queue was started
+        self.run_queue_current: int = 0        # 1-based index of the step in progress
+        self.run_queue_active: bool = False     # True while the queue thread is running
 
     def reset(self):
         self.metrics_history = []
@@ -484,6 +494,8 @@ class AppState:
         self.current_best_robustness = 0.0
         self.current_training_phase = ''
         self.current_corruption_level = 0.0
+        self.current_corruption_value = 0
+        self.current_robustness_rate = 0.0
         self.current_decomp_mismatches = 0
         self.current_items_evaluated = 0
         self.current_successful_compressions = 0
@@ -597,6 +609,9 @@ def status():
         'can_continue': (not app_state.is_training 
                          and app_state.optimizer is not None),
         'run_history_count': len(app_state.run_history),
+        'run_queue_active': app_state.run_queue_active,
+        'run_queue_step': app_state.run_queue_current,
+        'run_queue_total': app_state.run_queue_total,
     })
 
 
@@ -636,6 +651,8 @@ def metrics():
         'best_robustness': app_state.current_best_robustness,
         'training_phase': app_state.current_training_phase,
         'corruption_level': app_state.current_corruption_level,
+        'corruption_value': app_state.current_corruption_value,
+        'robustness_rate': app_state.current_robustness_rate,
         'decomp_mismatches': app_state.current_decomp_mismatches,
         'items_evaluated': app_state.current_items_evaluated,
         'successful_compressions': app_state.current_successful_compressions,
@@ -819,6 +836,8 @@ def start():
                         app_state.current_best_robustness = data.get('best_robustness', 0.0)
                         app_state.current_training_phase = data.get('training_phase', '')
                         app_state.current_corruption_level = data.get('corruption_level', 0.0)
+                        app_state.current_corruption_value = data.get('corruption_value', 0)
+                        app_state.current_robustness_rate = data.get('robustness_rate', 0.0)
                         app_state.current_decomp_mismatches = data.get('decomp_mismatches', 0)
                         app_state.current_items_evaluated = data.get('items_evaluated', 0)
                         app_state.current_successful_compressions = data.get('successful_compressions', 0)
@@ -837,6 +856,8 @@ def start():
                             'best_robustness': app_state.current_best_robustness,
                             'training_phase': app_state.current_training_phase,
                             'corruption_level': app_state.current_corruption_level,
+                            'corruption_value': app_state.current_corruption_value,
+                            'robustness_rate': app_state.current_robustness_rate,
                             'decomp_mismatches': app_state.current_decomp_mismatches,
                             'items_evaluated': app_state.current_items_evaluated,
                             'successful_compressions': app_state.current_successful_compressions,
@@ -882,6 +903,12 @@ def start():
                     print(f"DEBUG-TIMING: *** SLOW *** Optimizer init > 5s ({opt_init_ms:.0f}ms) — check subsystem breakdown above")
             app_state.optimizer = opt
             app_state.stop_event = opt.gui_stop_event
+            
+            # Apply any pending floor overrides that were set before Start
+            if app_state.pending_override_size_kb is not None or app_state.pending_override_complexity_pct is not None:
+                opt.set_manual_overrides(
+                    benchmark_size_kb=app_state.pending_override_size_kb,
+                    complexity_pct=app_state.pending_override_complexity_pct)
             
             if _debug_mode:
                 print("DEBUG: Calling start_evolution...")
@@ -960,6 +987,53 @@ def continue_training():
     t.start()
     return jsonify({'success': True, 'mode': mode_str})
 
+
+@app.route('/api/training/set-overrides', methods=['POST'])
+def set_overrides():
+    """Set manual floor overrides for benchmark size and complexity.
+
+    Accepts JSON:
+        benchmark_size_kb (int|null): Minimum per-item size in KB. Null = clear.
+        complexity_pct (int|null): Minimum complexity 0-100. Null = clear.
+
+    Floors persist until explicitly cleared.  The automatic progressive
+    system still runs; if the AI naturally exceeds the floor (e.g. via
+    gold-standard gates) the higher value is used.
+
+    Can be called BEFORE training starts — overrides are stored on
+    AppState and applied when the optimizer is created.
+    """
+    config = request.json or {}
+    size_kb = config.get('benchmark_size_kb')
+    cpx_pct = config.get('complexity_pct')
+
+    if size_kb is not None:
+        size_kb = max(1, min(10240, int(size_kb)))  # 1 KB – 10 MB
+    if cpx_pct is not None:
+        cpx_pct = max(0, min(100, int(cpx_pct)))
+
+    # Always store on AppState so they survive optimizer (re)creation
+    app_state.pending_override_size_kb = size_kb
+    app_state.pending_override_complexity_pct = cpx_pct
+
+    # If optimizer already exists, apply immediately
+    if app_state.optimizer:
+        try:
+            app_state.optimizer.set_manual_overrides(
+                benchmark_size_kb=size_kb,
+                complexity_pct=cpx_pct)
+        except Exception as e:
+            return jsonify({'success': False, 'error': str(e)})
+
+    size_label = 'auto' if size_kb is None else f'{size_kb}KB'
+    cpx_label = 'auto' if cpx_pct is None else f'{cpx_pct}%'
+    app_state.log_queue.put({
+        'level': 'INFO',
+        'message': f'Manual floors set — size>={size_label}, complexity>={cpx_label}'
+    })
+    return jsonify({'success': True, 'benchmark_size_kb': size_kb, 'complexity_pct': cpx_pct})
+
+
 @app.route('/api/training/run-history')
 def run_history():
     """Return archived run summaries (metrics only, not full history arrays for large runs)."""
@@ -973,6 +1047,263 @@ def run_history():
             'final_tier': run.get('final_tier', 'UNKNOWN'),
         })
     return jsonify({'runs': summaries, 'current_run': app_state.run_number})
+
+
+# --- RUN QUEUE API (sequential multi-override sweeps) ---
+
+@app.route('/api/training/start-queue', methods=['POST'])
+def start_queue():
+    """Start a sequence of training runs, each with its own overrides.
+
+    Accepts JSON:
+        steps: list of dicts, each with:
+            generations (int): how many gens for this step
+            benchmark_size_kb (int|null): override size floor (null = auto)
+            complexity_pct (int|null): override complexity floor (null = auto)
+            label (str, optional): display label for this step
+        population_size (int, optional): pop size for initial start
+        batch_size (int, optional): batch size
+        target_device (str, optional): GPU_AUTO or CPU
+        cpu_workers (int, optional): worker count
+
+    The first step creates a fresh optimizer (like /start).  Each subsequent
+    step continues evolution (like /continue) with new overrides applied.
+    """
+    if app_state.is_training or app_state.run_queue_active:
+        return jsonify({'success': False, 'error': 'Training or queue already running'})
+
+    config = request.json or {}
+    steps = config.get('steps', [])
+    if not steps or not isinstance(steps, list):
+        return jsonify({'success': False, 'error': 'steps must be a non-empty list'})
+
+    # Validate and sanitize steps
+    sanitized: list[dict] = []
+    for i, s in enumerate(steps):
+        gens = max(1, min(int(s.get('generations', 100)), SYSTEM_LIMITS['max_gens']))
+        size_kb = s.get('benchmark_size_kb')
+        cpx_pct = s.get('complexity_pct')
+        if size_kb is not None:
+            size_kb = max(1, min(10240, int(size_kb)))
+        if cpx_pct is not None:
+            cpx_pct = max(0, min(100, int(cpx_pct)))
+        label = str(s.get('label', f'Step {i + 1}'))[:64]
+        sanitized.append({
+            'generations': gens,
+            'benchmark_size_kb': size_kb,
+            'complexity_pct': cpx_pct,
+            'label': label,
+        })
+
+    pop_size = min(int(config.get('population_size', SYSTEM_LIMITS['default_pop'])), SYSTEM_LIMITS['max_pop'])
+    batch_size = max(1, min(int(config.get('batch_size', 10)), pop_size))
+    target_device = config.get('target_device', 'GPU_AUTO')
+    cpu_workers = max(1, min(int(config.get('cpu_workers', 4)), 256))
+
+    # Store queue state
+    app_state.run_queue = list(sanitized)
+    app_state.run_queue_total = len(sanitized)
+    app_state.run_queue_current = 0
+    app_state.run_queue_active = True
+
+    def queue_thread():
+        try:
+            for step_idx, step in enumerate(sanitized):
+                if app_state.stop_event and app_state.stop_event.is_set():
+                    app_state.log_queue.put({
+                        'level': 'INFO',
+                        'message': f'Run queue cancelled at step {step_idx + 1}/{len(sanitized)}'
+                    })
+                    break
+
+                app_state.run_queue_current = step_idx + 1
+                step_label = step['label']
+                step_gens = step['generations']
+                step_size = step['benchmark_size_kb']
+                step_cpx = step['complexity_pct']
+                size_str = 'auto' if step_size is None else f'{step_size}KB'
+                cpx_str = 'auto' if step_cpx is None else f'{step_cpx}%'
+
+                app_state.log_queue.put({
+                    'level': 'INFO',
+                    'message': (
+                        f'▶ Queue step {step_idx + 1}/{len(sanitized)}: '
+                        f'{step_label} — {step_gens} gens, '
+                        f'size≥{size_str}, complexity≥{cpx_str}'
+                    )
+                })
+
+                if step_idx == 0:
+                    # --- First step: fresh start ---
+                    app_state.archive_run()
+                    app_state.run_number += 1
+                    app_state.is_training = True
+                    app_state.reset()
+
+                    class Bridge:
+                        def put_nowait(self, item):
+                            if not isinstance(item, str):
+                                return
+                            if item.startswith("METRICS_JSON:"):
+                                try:
+                                    data = json.loads(item.replace("METRICS_JSON:", "", 1))
+                                    app_state.current_generation = data.get('generation')
+                                    app_state.current_fitness = data.get('fitness')
+                                    app_state.current_compression_ratio = data.get('ratio')
+                                    app_state.current_file_size = data.get('benchmark_size')
+                                    app_state.current_complexity_tier = data.get('complexity_tier', 'UNKNOWN')
+                                    app_state.current_complexity_value = data.get('complexity_value', 0)
+                                    app_state.current_tier_budget_mb = data.get('tier_budget_mb', 0.0)
+                                    app_state.current_tier_ceiling_kb = data.get('tier_ceiling_kb', 0.0)
+                                    app_state.current_best_robustness = data.get('best_robustness', 0.0)
+                                    app_state.current_training_phase = data.get('training_phase', '')
+                                    app_state.current_corruption_level = data.get('corruption_level', 0.0)
+                                    app_state.current_corruption_value = data.get('corruption_value', 0)
+                                    app_state.current_robustness_rate = data.get('robustness_rate', 0.0)
+                                    app_state.current_decomp_mismatches = data.get('decomp_mismatches', 0)
+                                    app_state.current_items_evaluated = data.get('items_evaluated', 0)
+                                    app_state.current_successful_compressions = data.get('successful_compressions', 0)
+                                    app_state.current_method_stats = data.get('method_stats', {})
+                                    app_state.current_novel_pipeline = data.get('novel_pipeline', 'none')
+                                    app_state.current_gold_standard_win_rate = data.get('gold_standard_win_rate', -1.0)
+                                    app_state.metrics_history.append({
+                                        'generation': app_state.current_generation,
+                                        'fitness': app_state.current_fitness,
+                                        'ratio': app_state.current_compression_ratio,
+                                        'benchmark_size': app_state.current_file_size,
+                                        'complexity_tier': app_state.current_complexity_tier,
+                                        'complexity_value': app_state.current_complexity_value,
+                                        'tier_budget_mb': app_state.current_tier_budget_mb,
+                                        'tier_ceiling_kb': app_state.current_tier_ceiling_kb,
+                                        'best_robustness': app_state.current_best_robustness,
+                                        'training_phase': app_state.current_training_phase,
+                                        'corruption_level': app_state.current_corruption_level,
+                                        'corruption_value': app_state.current_corruption_value,
+                                        'robustness_rate': app_state.current_robustness_rate,
+                                        'decomp_mismatches': app_state.current_decomp_mismatches,
+                                        'items_evaluated': app_state.current_items_evaluated,
+                                        'successful_compressions': app_state.current_successful_compressions,
+                                        'method_stats': app_state.current_method_stats,
+                                        'novel_pipeline': app_state.current_novel_pipeline,
+                                        'gold_standard_win_rate': app_state.current_gold_standard_win_rate,
+                                    })
+                                    if len(app_state.metrics_history) > _MAX_METRICS_HISTORY:
+                                        app_state.metrics_history = app_state.metrics_history[-_MAX_METRICS_HISTORY:]
+                                    gen = app_state.current_generation or 0
+                                    if gen > 0 and gen % _CACHE_FLUSH_INTERVAL == 0:
+                                        app_state.save_cache()
+                                except:
+                                    pass
+                                return
+                            clean = item.replace(ELS_LOG_PREFIX, "").strip()
+                            if not clean:
+                                return
+                            level = 'ERROR' if 'Error' in clean else 'INFO'
+                            try:
+                                app_state.log_queue.put_nowait({'level': level, 'message': clean})
+                            except:
+                                pass
+
+                    if _EvolutionaryOptimizerClass is None:
+                        raise ImportError("EvolutionaryOptimizer failed to load.")
+
+                    opt = _EvolutionaryOptimizerClass(
+                        population_size=pop_size,
+                        num_generations=step_gens,
+                        gui_output_queue=Bridge(),
+                        gui_stop_event=threading.Event(),
+                        target_device=target_device,
+                        dynamic_benchmarking_active=True,
+                        infinite_mode=False,
+                        population_batch_size=batch_size,
+                        cpu_eval_workers=cpu_workers,
+                    )
+                    app_state.optimizer = opt
+                    app_state.stop_event = opt.gui_stop_event
+
+                    # Apply step overrides
+                    if step_size is not None or step_cpx is not None:
+                        opt.set_manual_overrides(
+                            benchmark_size_kb=step_size,
+                            complexity_pct=step_cpx)
+
+                    opt.start_evolution()
+                    app_state.is_training = False
+
+                else:
+                    # --- Subsequent steps: continue with new overrides ---
+                    opt = app_state.optimizer
+                    if not opt:
+                        app_state.log_queue.put({
+                            'level': 'ERROR',
+                            'message': f'Queue step {step_idx + 1} skipped — no optimizer available'
+                        })
+                        break
+
+                    # Apply this step's overrides
+                    if step_size is not None or step_cpx is not None:
+                        opt.set_manual_overrides(
+                            benchmark_size_kb=step_size,
+                            complexity_pct=step_cpx)
+                    else:
+                        # Clear overrides (auto)
+                        opt.set_manual_overrides(
+                            benchmark_size_kb=None,
+                            complexity_pct=None)
+
+                    if opt.gui_stop_event:
+                        opt.gui_stop_event.clear()
+                    app_state.stop_event = opt.gui_stop_event
+
+                    app_state.is_training = True
+                    app_state.start_time = time.time()
+                    opt.continue_evolution(additional_gens=step_gens, switch_infinite=False)
+                    app_state.is_training = False
+
+                # Flush cache between steps
+                app_state.save_cache()
+
+                app_state.log_queue.put({
+                    'level': 'SUCCESS',
+                    'message': f'✓ Queue step {step_idx + 1}/{len(sanitized)} complete: {step_label}'
+                })
+
+            # All steps done (or cancelled)
+            was_stopped = app_state.stop_event and app_state.stop_event.is_set()
+            app_state.completed_naturally = not was_stopped
+            if not was_stopped:
+                app_state.log_queue.put({
+                    'level': 'SUCCESS',
+                    'message': f'Run queue complete — all {len(sanitized)} steps finished.'
+                })
+
+        except Exception as e:
+            err_msg = f"CRITICAL QUEUE ERROR: {e}"
+            print(err_msg)
+            traceback.print_exc()
+            app_state.log_queue.put({'level': 'ERROR', 'message': err_msg})
+        finally:
+            app_state.save_cache()
+            app_state.is_training = False
+            app_state.run_queue_active = False
+            app_state.run_queue = []
+            app_state.run_queue_current = 0
+
+    t = threading.Thread(target=queue_thread, daemon=True)
+    t.start()
+    return jsonify({'success': True, 'steps': len(sanitized)})
+
+
+@app.route('/api/training/queue-status')
+def queue_status():
+    """Return current run queue progress."""
+    return jsonify({
+        'active': app_state.run_queue_active,
+        'current_step': app_state.run_queue_current,
+        'total_steps': app_state.run_queue_total,
+        'remaining': list(app_state.run_queue[app_state.run_queue_current:]) if app_state.run_queue_active else [],
+    })
+
 
 # --- CHECKPOINT API ---
 def _get_checkpoint_manager():
@@ -1070,15 +1401,46 @@ def evolution_deep_dive():
         root = find_root(aid)
         gene_pools.setdefault(root, []).append(aid)
     
+    # Determine living agent IDs (current/latest generation only) so the
+    # gene-pool *count* reflects lineages that are actually alive, not every
+    # ancestor that ever existed.  Each gen-0 agent otherwise becomes its own
+    # pool (pop_size pools on generation 0), which is misleading.
+    living_agent_ids = set()
+    if app_state.is_training:
+        try:
+            raw_pop = getattr(app_state.optimizer, 'population', [])
+            for agent in raw_pop:
+                if agent is not None:
+                    living_agent_ids.add(getattr(agent, 'agent_id', ''))
+        except Exception:
+            pass
+    if not living_agent_ids and snapshots:
+        # Fallback: use agents from the most recent snapshot
+        latest = snapshots[-1]
+        for batch in latest.get('batches', []):
+            for agent in batch.get('agents', []):
+                living_agent_ids.add(agent.get('agent_id', ''))
+
+    # Living gene pools: only pools that have at least one living member
+    living_gene_pools = {}
+    for root, members in gene_pools.items():
+        living_members = [m for m in members if m in living_agent_ids]
+        if living_members:
+            living_gene_pools[root] = living_members
+
     # Assign stable color indices to gene pools (largest pools first)
-    sorted_pools = sorted(gene_pools.items(), key=lambda x: -len(x[1]))
+    sorted_pools = sorted(living_gene_pools.items(), key=lambda x: -len(x[1]))
     pool_color_map = {}  # agent_id -> pool_index
-    for idx, (root, members) in enumerate(sorted_pools):
-        for mid in members:
-            pool_color_map[mid] = idx
+    # Map all agents (including historical) through their root's pool index
+    # so colors stay consistent across generations
+    living_root_to_idx = {root: idx for idx, (root, _) in enumerate(sorted_pools)}
+    for aid in parent_map:
+        root = find_root(aid)
+        pool_color_map[aid] = living_root_to_idx.get(root, len(sorted_pools))
     
     # --- Build agent fitness lookup across all snapshots ---
-    agent_fitness_map = {}  # agent_id -> fitness
+    agent_fitness_map = {}   # agent_id -> fitness (compression)
+    agent_detail_map = {}    # agent_id -> {compression_fitness, robustness_fitness, agent_type}
     for snap in snapshots:
         for batch in snap.get('batches', []):
             for agent in batch.get('agents', []):
@@ -1086,6 +1448,12 @@ def evolution_deep_dive():
                 fit = agent.get('fitness')
                 if aid and fit is not None:
                     agent_fitness_map[aid] = fit
+                if aid:
+                    agent_detail_map[aid] = {
+                        'compression_fitness': agent.get('compression_fitness', 0.0) or 0.0,
+                        'robustness_fitness': agent.get('robustness_fitness', 0.0) or 0.0,
+                        'agent_type': agent.get('agent_type', 'compression'),
+                    }
 
     # --- Track how often each agent is selected as a parent (top breeders) ---
     breeder_frequency = {}  # agent_id -> count of times selected as parent
@@ -1114,6 +1482,9 @@ def evolution_deep_dive():
                     'generation_born': agent.get('generation_born', 0),
                     'parent_ids': pids,
                     'pool_index': pool_color_map.get(aid, 0),
+                    'agent_type': agent.get('agent_type', 'compression'),
+                    'compression_fitness': agent.get('compression_fitness', 0.0),
+                    'robustness_fitness': agent.get('robustness_fitness', 0.0),
                     'learning_rate': agent.get('learning_rate', 0.0),
                     'exploration_rate': agent.get('exploration_rate', 0.0),
                     'rle_min_run': agent.get('rle_min_run', 'N/A'),
@@ -1121,6 +1492,13 @@ def evolution_deep_dive():
                     'is_elite': 'elite' in aid.lower() if aid else False,
                     'has_novel_method': agent.get('has_novel_method', False),
                     'novel_pipeline': agent.get('novel_pipeline', 'none'),
+                    # v0.9.9: recipe improvement count (0 = base recipe only)
+                    'recipe_improvements': agent.get('recipe_improvements', 0),
+                    # v0.9.10: recipe strength + family + lifecycle
+                    'recipe_strength': agent.get('recipe_strength', 0.0),
+                    'recipe_family': agent.get('recipe_family', 'none'),
+                    'recipe_is_alive': agent.get('recipe_is_alive', True),
+                    'recipe_times_rediscovered': agent.get('recipe_times_rediscovered', 0),
                 }
                 gen_agents.append(enriched_agent)
 
@@ -1221,25 +1599,130 @@ def evolution_deep_dive():
     mutation_rate = getattr(app_state.optimizer, 'base_mutation_rate', 0.0)
     stagnation = getattr(app_state.optimizer, '_stagnation_counter', 0)
 
-    # Gene pool summary (top 12 pools by size)
+    # Gene pool summary (top 12 living pools by size) with dual fitness scoring
+    # v0.9.10: Also includes per-pool recipe family distribution
     pool_summary = {}
     for idx, (root, members) in enumerate(sorted_pools[:12]):
+        # Compute per-pool fitness aggregation from living members
+        comp_scores = []
+        robust_scores = []
+        comp_count = 0
+        anti_count = 0
+        # v0.9.10: Per-pool method tracking
+        recipe_families = {}       # family_key -> count
+        recipe_strengths = []      # all strengths for averaging
+        mature_recipe_count = 0
+        alive_recipe_count = 0
+        resurrected_count = 0
+        for mid in members:
+            detail = agent_detail_map.get(mid)
+            if detail:
+                cf = detail.get('compression_fitness', 0.0) or 0.0
+                rf = detail.get('robustness_fitness', 0.0) or 0.0
+                if cf > -999:
+                    comp_scores.append(cf)
+                if rf > -999:
+                    robust_scores.append(rf)
+                atype = detail.get('agent_type', 'compression')
+                if atype == 'anti_corruption':
+                    anti_count += 1
+                else:
+                    comp_count += 1
+                # v0.9.10: Recipe info from snapshot
+                rfam = detail.get('recipe_family', 'none')
+                if rfam and rfam != 'none':
+                    recipe_families[rfam] = recipe_families.get(rfam, 0) + 1
+                rstr = detail.get('recipe_strength', 0.0)
+                if rstr is not None:
+                    recipe_strengths.append(rstr)
+                if detail.get('has_novel_method', False):
+                    mature_recipe_count += 1
+                if detail.get('recipe_is_alive', True):
+                    alive_recipe_count += 1
+                if detail.get('recipe_times_rediscovered', 0) > 0:
+                    resurrected_count += 1
+
+        avg_compression = round(sum(comp_scores) / len(comp_scores), 4) if comp_scores else 0.0
+        avg_robustness = round(sum(robust_scores) / len(robust_scores), 4) if robust_scores else 0.0
+        best_compression = round(max(comp_scores), 4) if comp_scores else 0.0
+        best_robustness = round(max(robust_scores), 4) if robust_scores else 0.0
+
+        # Determine pool specialization from member type distribution
+        if comp_count > 0 and anti_count > 0:
+            specialization = 'hybrid'
+        elif anti_count > 0:
+            specialization = 'robustness'
+        else:
+            specialization = 'compression'
+
+        # v0.9.10: Dominant method family for this pool
+        dominant_family = 'none'
+        if recipe_families:
+            dominant_family = max(recipe_families, key=recipe_families.get)
+
         pool_summary[str(idx)] = {
             'root_ancestor': root,
             'size': len(members),
             'index': idx,
+            'avg_compression': avg_compression,
+            'avg_robustness': avg_robustness,
+            'best_compression': best_compression,
+            'best_robustness': best_robustness,
+            'compression_agents': comp_count,
+            'robustness_agents': anti_count,
+            'specialization': specialization,
+            # v0.9.10: Per-pool recipe method distribution
+            'recipe_families': recipe_families,
+            'dominant_family': dominant_family,
+            'avg_recipe_strength': round(sum(recipe_strengths) / len(recipe_strengths), 3) if recipe_strengths else 0.0,
+            'mature_recipe_count': mature_recipe_count,
+            'alive_recipe_count': alive_recipe_count,
+            'resurrected_agent_count': resurrected_count,
         }
 
     # --- Method direction summary across visible generations ---
     method_direction = []
     for eg in enriched_gens:
+        # v0.9.10: Collect per-gen recipe stats from enriched agents
+        gen_agents = eg.get('agents', [])
+        gen_recipe_families = {}
+        gen_strengths = []
+        gen_mature = 0
+        gen_resurrected = 0
+        for a in gen_agents:
+            rf = a.get('recipe_family', 'none')
+            if rf and rf != 'none':
+                gen_recipe_families[rf] = gen_recipe_families.get(rf, 0) + 1
+            rs = a.get('recipe_strength', 0.0)
+            if rs is not None:
+                gen_strengths.append(rs)
+            if a.get('has_novel_method', False):
+                gen_mature += 1
+            if a.get('recipe_times_rediscovered', 0) > 0:
+                gen_resurrected += 1
+
         method_direction.append({
             'generation': eg['generation'],
             'avg_rle_min_run': eg.get('avg_rle_min_run'),
             'novel_method_count': eg.get('novel_method_count', 0),
             'cross_pool_breeding': eg.get('cross_pool_breeding', 0),
             'top_threshold_config': eg.get('top_threshold_config', 'N/A'),
+            # v0.9.10: Recipe lifecycle per generation
+            'avg_recipe_strength': round(sum(gen_strengths) / len(gen_strengths), 3) if gen_strengths else 0.0,
+            'mature_recipe_count': gen_mature,
+            'unique_families': len(gen_recipe_families),
+            'resurrected_count': gen_resurrected,
+            'dominant_family': max(gen_recipe_families, key=gen_recipe_families.get) if gen_recipe_families else 'none',
         })
+
+    # --- v0.9.10: Method registry summary ---
+    method_registry_summary = {}
+    try:
+        registry = getattr(app_state.optimizer, '_method_registry', None)
+        if registry and hasattr(registry, 'get_summary'):
+            method_registry_summary = registry.get_summary()
+    except Exception:
+        pass
 
     return jsonify({
         'generations': enriched_gens,
@@ -1247,13 +1730,14 @@ def evolution_deep_dive():
         'top_agents': top_agents,
         'top_breeders': top_breeders_list,
         'method_direction': method_direction,
+        'method_registry': method_registry_summary,
         'total_gens': total,
         'page': page,
         'per_page': per_page,
         'total_pages': total_pages,
         'mutation_rate': mutation_rate,
         'stagnation_counter': stagnation,
-        'total_pool_count': len(gene_pools),
+        'total_pool_count': len(living_gene_pools),
     })
 
 @app.route('/api/checkpoint/save', methods=['POST'])

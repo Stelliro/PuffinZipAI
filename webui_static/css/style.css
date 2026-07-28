@@ -226,6 +226,11 @@ html, body {
     transition: width .4s ease;
     min-width: 40px;
 }
+/* --- Corruption Bar (independent anti-corruption track) --- */
+.corruption-bar {
+    background: linear-gradient(90deg, #38bdf8, #a855f7, #ef4444);
+    color: #fff;
+}
 
 /* --- Complexity Detail Rows --- */
 .complexity-details { display: flex; flex-direction: column; gap: 6px; }

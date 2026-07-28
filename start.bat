@@ -157,6 +157,23 @@ if !errorlevel! equ 0 (
     echo [!] No NVIDIA GPU detected — CPU-only mode
 )
 
+REM ── Ensure CuPy on GPU hosts (self-heals pre-existing venvs) ──────────────
+REM The dependency block above only installs CuPy on a "first run". A venv that
+REM predates the GPU-RLE feature skips it entirely, leaving the GPU idle even
+REM though hardware is present. This standalone check runs every launch:
+REM whenever a CUDA GPU is detected but CuPy is not importable, install it.
+REM It is a fast no-op once CuPy is present.
+if !GPU_COUNT! gtr 0 (
+    %PYTHON_EXE% -c "import cupy" >nul 2>&1
+    if errorlevel 1 (
+        echo [i] GPU detected but CuPy missing — installing cupy-cuda12x for GPU acceleration...
+        %PYTHON_EXE% -m pip install cupy-cuda12x -q
+        %PYTHON_EXE% -c "import cupy" >nul 2>&1 && echo [OK] CuPy installed — GPU acceleration enabled || echo [!] CuPy install failed — agents will run on CPU ^(GPU RLE disabled^)
+    ) else (
+        echo [OK] CuPy present — GPU acceleration available
+    )
+)
+
 REM ── Hardware detection — CPU & RAM (via Python for reliability) ───────────
 set "CPU_CORES=4"
 set "RAM_MB=8192"

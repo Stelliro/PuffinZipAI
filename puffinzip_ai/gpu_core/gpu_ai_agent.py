@@ -60,12 +60,8 @@ try:
 except ImportError as e_base_import_gpu_agent:
     print(f"CRITICAL ERROR (gpu_ai_agent.py): Failed to import base AI or RLE components: {e_base_import_gpu_agent}")
     traceback.print_exc()
-    # If core imports failed the module cannot function.  Assign minimal
-    # no-op fallbacks so that downstream code that references these names
-    # does not crash with NameError, but any real usage will surface the
-    # root ImportError above.
     if _PuffinZipAI_base is None:
-        raise  # Cannot function without the base AI class
+        raise  
     if _DummyLogger_base is None:
         _DummyLogger_base = type('DummyLogger', (), {
             '_log': lambda self, lvl, msg, **kw: None,
@@ -95,13 +91,11 @@ try:
 except ImportError: pass
 
 # --- GPU VALIDATION CACHE ---
-# Instead of running GPU health checks per-agent (50x), we do it once globally.
-# All subsequent PuffinZipAI_GPU instances skip the expensive checks.
 _GPU_VALIDATION_CACHE = {
-    'validated': False,       # True once we've done a successful health check
-    'gpu_ok': False,          # True if GPU is usable
-    'gpu_id': -1,             # Validated GPU device ID
-    'device_name': 'Unknown', # For logging
+    'validated': False,       
+    'gpu_ok': False,          
+    'gpu_id': -1,             
+    'device_name': 'Unknown', 
 }
 
 def _validate_gpu_once(target_device_str: str = "GPU_AUTO") -> dict:
@@ -110,7 +104,7 @@ def _validate_gpu_once(target_device_str: str = "GPU_AUTO") -> dict:
     if cache['validated']:
         return cache
 
-    cache['validated'] = True  # Mark done even if it fails, to prevent retries
+    cache['validated'] = True  
     
     if not CUPY_AVAILABLE:
         return cache
@@ -120,7 +114,6 @@ def _validate_gpu_once(target_device_str: str = "GPU_AUTO") -> dict:
         if num_gpus == 0:
             return cache
         
-        # Parse device ID
         parsed_id = 0
         if target_device_str.upper() == "GPU_AUTO":
             parsed_id = get_best_available_gpu_id()
@@ -134,13 +127,11 @@ def _validate_gpu_once(target_device_str: str = "GPU_AUTO") -> dict:
             except (ValueError, IndexError):
                 parsed_id = 0
         
-        # Set device and get properties
         cp.cuda.runtime.setDevice(parsed_id)
         props = cp.cuda.runtime.getDeviceProperties(parsed_id)
         device_name = str(props.get('name', 'Unknown')) if isinstance(props, dict) else (
             props.name.decode() if isinstance(props.name, bytes) else str(props.name))
         
-        # Health check — single tiny operation
         with cp.cuda.Device(parsed_id):
             _ = cp.array([1])
         
@@ -161,14 +152,7 @@ class PuffinZipAI_GPU(_PuffinZipAI_base):
                  rle_min_encodable_run: int = None, rle_min_encodable_run_length: int = None,
                  target_device: str = None,
                  _defer_gpu_transfer: bool = False, **kwargs):
-        """
-        Args:
-            rle_min_encodable_run: Min run length for RLE (preferred param name).
-            rle_min_encodable_run_length: Alias for rle_min_encodable_run (base class compat).
-            _defer_gpu_transfer: When True, skip per-agent GPU device init and Q-table transfer.
-                Used during bulk population creation — call finalize_gpu_init() afterwards.
-        """
-        # Merge the two RLE param names (prefer explicit rle_min_encodable_run)
+        
         if rle_min_encodable_run is None and rle_min_encodable_run_length is not None:
             rle_min_encodable_run = rle_min_encodable_run_length
         self.gpu_id = -1
@@ -193,8 +177,6 @@ class PuffinZipAI_GPU(_PuffinZipAI_base):
         elif isinstance(current_logger_assigned_by_super, logging.Logger) and hasattr(current_logger_assigned_by_super, 'name') and current_logger_assigned_by_super.name == 'PZAIPH_Logger': is_super_logger_a_placeholder = True
         if is_super_logger_a_placeholder:
             log_file_full_path_gpu = os.path.join(_LOGS_DIR_PATH_fallback, f"gpu_{_CORE_AI_LOG_FILENAME_fallback}")
-            # Use a SHARED logger name so all GPU agents reuse ONE logger instance
-            # (prevents 50+ file handles to the same log file — same fix as ai_core.py)
             _shared_gpu_logger_name = 'PuffinZipAI_GPU_Shared'
             try:
                 existing = logging.getLogger(_shared_gpu_logger_name)
@@ -206,7 +188,6 @@ class PuffinZipAI_GPU(_PuffinZipAI_base):
             except Exception as e_gpu_log_reinit: print(f"ERROR (PuffinZipAI_GPU): Failed to re-setup its specific logger: {e_gpu_log_reinit}."); self.logger = _DummyLogger_base(); self.logger.error("Fell back to _DummyLogger_base after logger re-init attempt failed.")
         
         if self._deferred_gpu:
-            # --- DEFERRED MODE: Skip all GPU init, will be finalized in bulk later ---
             self.logger.debug(f"PZAI_GPU: Deferred GPU init mode — skipping device probe & Q-table transfer.")
         elif self.use_gpu_acceleration:
             self._do_gpu_init()
@@ -216,10 +197,8 @@ class PuffinZipAI_GPU(_PuffinZipAI_base):
         self.logger.info(f"PZAI_GPU Final Init State: TargetDevice='{getattr(self, 'target_device', 'N/A')}', GPU Ops Active={self.use_gpu_acceleration}, GPU_ID={self.gpu_id}, Deferred={self._deferred_gpu}")
 
     def _do_gpu_init(self):
-        """Perform GPU device init and Q-table transfer using the global validation cache."""
         self.logger.info(f"PZAI_GPU: GPU acceleration IS requested by target_device '{self.target_device}'.")
         if CUPY_AVAILABLE:
-            # Use the global validation cache instead of per-agent device probing
             cache = _validate_gpu_once(self.target_device)
             if cache['gpu_ok']:
                 self.gpu_id = cache['gpu_id']
@@ -238,11 +217,8 @@ class PuffinZipAI_GPU(_PuffinZipAI_base):
             self.use_gpu_acceleration = False
 
     def finalize_gpu_init(self):
-        """Finalize GPU setup for agents created with _defer_gpu_transfer=True.
-        Uses the cached GPU validation to avoid redundant device probing.
-        Call this once after bulk population creation."""
         if not self._deferred_gpu:
-            return  # Already initialized normally
+            return  
         self._deferred_gpu = False
         if self.use_gpu_acceleration:
             self._do_gpu_init()
@@ -308,6 +284,68 @@ class PuffinZipAI_GPU(_PuffinZipAI_base):
             self._transfer_q_table_to_gpu()
         else: self.logger.debug("PZAI_GPU: Post-reinit, GPU Q-table transfer skipped (conditions not met).")
 
+    # --- HETEROGENEOUS BATCH INTERFACES ---
+    def batch_choose_actions(self, texts: list, use_exploration: bool = False) -> list:
+        """
+        Phase 1: Batched GPU inference for tabular Q-learning.
+        Uses CuPy fancy indexing to select actions for all items simultaneously.
+        """
+        if not texts:
+            return []
+
+        # 1. CPU: convert texts to state indices
+        state_idxs = [self._get_state_representation(t) for t in texts]
+
+        # 2. Determine effective action space restrictions
+        effective_actions = 3  
+        if getattr(self, '_novel_compress_fn', None):
+            effective_actions = 4
+        if getattr(self, '_scaffolding_enabled', False) and getattr(self, '_reference_compress_fn', None) and effective_actions >= 4:
+            ref_allowed = True
+            try:
+                from ..compression_scaffolding import get_scaffolding_manager
+                agent_id = str(getattr(self, '_scaffold_agent_id', id(self)))
+                ref_allowed = get_scaffolding_manager().is_reference_allowed(
+                    agent_id, getattr(self, '_current_generation', 0)
+                )
+            except ImportError:
+                pass
+            if ref_allowed:
+                effective_actions = 5
+        effective_actions = min(effective_actions, self.action_space_size)
+
+        # 3. GPU: single batched argmax
+        if not use_exploration and self.use_gpu_acceleration and self.q_table_gpu is not None and CUPY_AVAILABLE and self.gpu_id != -1:
+            try:
+                with cp.cuda.Device(self.gpu_id):
+                    states_gpu = cp.asarray(state_idxs, dtype=cp.int32)
+                    q_values_gpu = self.q_table_gpu[states_gpu, :effective_actions]
+                    best_actions_gpu = cp.argmax(q_values_gpu, axis=1)
+                    best_actions = best_actions_gpu.get()
+                
+                return [(int(a), s) for a, s in zip(best_actions, state_idxs)]
+            except Exception as e:
+                self.logger.warning(f"Batched GPU Q-table inference failed: {e}. Falling back to sequential.")
+        
+        # 4. CPU / Exploration Fallback
+        results = []
+        for s in state_idxs:
+            act = self._choose_action(s, use_exploration=use_exploration)
+            results.append((act, s))
+            
+        return results
+
+    def batch_push_experiences(self, experiences: list) -> None:
+        """
+        Phase 3: Process a batch of experiences for Q-learning.
+        Maintains consistent API with NN agents.
+        """
+        for state_idx, action_idx, reward in experiences:
+            # We assume terminal states for isolated benchmark eval (next_state = state_idx)
+            self._update_q_table(state_idx, action_idx, reward, next_state_idx=state_idx)
+
+    # --- END HETEROGENEOUS BATCH INTERFACES ---
+
     def _choose_action(self, state_idx, use_exploration=True):
         action_space_size = getattr(self, 'action_space_size', 3)
         exploration_rate_val = getattr(self, 'exploration_rate', _DEFAULT_EXPLORATION_RATE)
@@ -341,7 +379,6 @@ class PuffinZipAI_GPU(_PuffinZipAI_base):
             try:
                 with cp.cuda.Device(self.gpu_id):
                     current_q_gpu = self.q_table_gpu[state_idx, action_idx]
-                    # Proper TD(0) Q-learning with next-state max Q
                     if next_state_idx is not None and 0 <= next_state_idx < self.q_table_gpu.shape[0]:
                         max_next_q_gpu = cp.max(self.q_table_gpu[next_state_idx])
                     else:
@@ -371,11 +408,10 @@ class PuffinZipAI_GPU(_PuffinZipAI_base):
         
         rle_min_override_val = rle_min_encodable_run_length_val if action_idx == 0 and action_name == action_names_map.get(0, "RLE") else None
         
-        if action_idx == 0 or action_idx == 2: # RLE or AdvancedRLE action
+        if action_idx == 0 or action_idx == 2: 
             rle_method_to_use = "simple" if action_idx == 0 else "advanced"
             attempt_gpu_rle = self.use_gpu_acceleration and self.gpu_id != -1
             
-            # --- Compression Step with Fallback ---
             compressed_via_gpu = False
             if attempt_gpu_rle and _gpu_accelerated_rle_compress_func:
                 compressed_text_final = _gpu_accelerated_rle_compress_func(
@@ -384,15 +420,14 @@ class PuffinZipAI_GPU(_PuffinZipAI_base):
                 if not isinstance(compressed_text_final, str) or not compressed_text_final.startswith("ERROR_GPU_"):
                     compressed_via_gpu = True
             
-            if not compressed_via_gpu: # Fallback to CPU compression
+            if not compressed_via_gpu: 
                 if _cpu_rle_compress_base_func:
                     compressed_text_final = _cpu_rle_compress_base_func(
                         item_text, method=rle_method_to_use, min_run_len_override=rle_min_override_val)
-                else: # Should not happen if imports work
+                else: 
                     self.logger.error("CPU RLE compress function unavailable! Defaulting to no compression.")
                     compressed_text_final = item_text
 
-            # --- Decompression Step with Fallback ---
             decompressed_via_gpu = False
             if attempt_gpu_rle and _gpu_accelerated_rle_decompress_func:
                 decompressed_text_final = _gpu_accelerated_rle_decompress_func(
@@ -401,17 +436,17 @@ class PuffinZipAI_GPU(_PuffinZipAI_base):
                 if not isinstance(decompressed_text_final, str) or not decompressed_text_final.startswith("ERROR_GPU_"):
                     decompressed_via_gpu = True
 
-            if not decompressed_via_gpu: # Fallback to CPU decompression
+            if not decompressed_via_gpu: 
                 if _cpu_rle_decompress_base_func:
                     decompressed_text_final = _cpu_rle_decompress_base_func(
                         compressed_text_final, method=rle_method_to_use, min_run_len_override=rle_min_override_val)
-                else: # Should not happen
+                else: 
                     self.logger.error("CPU RLE decompress function unavailable!")
                     decompressed_text_final = "ERROR_CPU_RLE_UNAVAILABLE"
 
-        elif action_idx == 1: # NoCompression action
+        elif action_idx == 1: 
             compressed_text_final, decompressed_text_final = item_text, item_text
-        else: # Unhandled action
+        else: 
             self.logger.warning(f"PZAI_GPU: Unhandled action '{action_name}' (idx {action_idx}). Defaulting to NoCompression.")
             compressed_text_final, decompressed_text_final = item_text, item_text
             action_name = action_names_map.get(1, "NoCompression_Fallback")

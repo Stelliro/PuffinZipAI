@@ -24,6 +24,21 @@ Key concepts added in v0.9.7:
     The combined ``fitness`` property is the primary sort key and equals
     whichever score matches the agent's type (or a weighted blend for
     hybrids born from cross-type breeding).
+
+Key concepts added in v0.9.9:
+  * **Incremental novel method recipes**
+    Each agent carries a ``novel_recipe`` (a ``NovelMethodRecipe``) that
+    evolves through small, tracked partial mutations.  Instead of every
+    agent receiving a random novel method, all agents start from the same
+    simple base recipe and build complexity over generations.  Children
+    inherit their parent's recipe (with all accumulated improvements) and
+    apply one small mutation.  Only recipes with ≥2 proven improvements
+    count as genuinely "novel".
+
+  * **Cross-family sub-novel methods**
+    When parents from different recipe families breed, a sub-novel method
+    is created by blending the best-contributing steps from each recipe
+    at varying strengths.
 """
 from __future__ import annotations
 
@@ -63,6 +78,12 @@ class EvolvingAgent:
         agent_type: str        — ``"compression"`` or ``"anti_corruption"``.
         compression_fitness:   float — fitness on clean data.
         robustness_fitness:    float — fitness on corrupted data.
+
+    Attributes (new in v0.9.9):
+        novel_recipe:  NovelMethodRecipe | None — evolvable compression recipe.
+        _pending_recipe_change: dict | None — mutation applied this generation
+            (checked post-evaluation to decide whether to record it as an
+            improvement).
     """
 
     def __init__(self, puffin_ai_instance: PuffinZipAI,  # type: ignore[valid-type]
@@ -70,7 +91,8 @@ class EvolvingAgent:
                  generation_born: int = 0,
                  parent_ids: list | None = None,
                  agent_type: str = "compression",
-                 heritage: list | None = None):
+                 heritage: list | None = None,
+                 novel_recipe=None):
 
         if not isinstance(puffin_ai_instance, PuffinZipAI):
             raise TypeError("puffin_ai_instance must be an instance of PuffinZipAI.")
@@ -97,6 +119,15 @@ class EvolvingAgent:
         # inherits the full family tree of tricks without storing the entire
         # agent graph — this is the "grandpapi" pattern.
         self.heritage: list = list(heritage) if heritage else []
+
+        # --- v0.9.9: Incremental novel method recipe ---
+        # The recipe evolves through partial mutations; only mature recipes
+        # (with >= MATURITY_THRESHOLD proven improvements) are counted as
+        # genuinely novel methods.
+        self.novel_recipe = novel_recipe  # NovelMethodRecipe | None
+        # Transient: the mutation that was applied this generation (cleared
+        # after post-evaluation improvement check).
+        self._pending_recipe_change: dict | None = None
 
         # Link scaffold tracking ID so it persists across clones
         if hasattr(self.puffin_ai, '_scaffold_agent_id'):
@@ -138,6 +169,7 @@ class EvolvingAgent:
         """Record a newly-discovered trick into this agent's heritage.
 
         This entry will be inherited by all future descendants.
+        Optionally includes recipe data (v0.9.9) for incremental tracking.
         """
         entry = {
             "trick": trick_label,
@@ -148,6 +180,13 @@ class EvolvingAgent:
             "ancestor_id": self.agent_id,
             "generation": generation,
         }
+        # v0.9.9: Also store the recipe dict if available (for recipe-aware
+        # heritage reconstruction during cross-family breeding).
+        if self.novel_recipe is not None:
+            try:
+                entry["recipe"] = self.novel_recipe.to_dict()
+            except Exception:
+                pass
         self.heritage.append(entry)
         # Keep bounded
         if len(self.heritage) > MAX_HERITAGE_ENTRIES:
@@ -186,6 +225,47 @@ class EvolvingAgent:
         best = max(self.heritage, key=lambda e: e.get("fitness_when_learned", 0.0))
         return best
 
+    # -----------------------------------------------------------------
+    #  Recipe helpers  (v0.9.9 — incremental novel method evolution)
+    # -----------------------------------------------------------------
+    def check_recipe_improvement(self, generation: int):
+        """Post-evaluation: check if the pending recipe mutation improved
+        fitness.  If so, record it as a proven improvement.
+
+        Called after evaluation by the optimizer.  Uses the agent's
+        current fitness vs the recipe's historical best.
+        """
+        if self.novel_recipe is None or self._pending_recipe_change is None:
+            return
+
+        agent_type = getattr(self, 'agent_type', 'compression')
+        if agent_type == 'anti_corruption':
+            current_fit = getattr(self, 'robustness_fitness', 0.0) or 0.0
+        else:
+            current_fit = self.fitness or 0.0
+
+        if current_fit > self.novel_recipe.best_fitness:
+            try:
+                from ..novel_compression_generator import RecipeEvolver
+                RecipeEvolver.record_improvement(
+                    self.novel_recipe,
+                    self._pending_recipe_change,
+                    current_fit,
+                    generation,
+                )
+            except ImportError:
+                pass
+
+        # Clear the pending change regardless
+        self._pending_recipe_change = None
+
+    @property
+    def has_mature_novel_method(self) -> bool:
+        """True only when this agent's recipe is genuinely novel
+        (has accumulated enough proven improvements)."""
+        return (self.novel_recipe is not None
+                and self.novel_recipe.is_mature)
+
     def clone(self, new_agent_id: str | None = None, new_generation_born: int | None = None):
         if not hasattr(self.puffin_ai, 'clone_core_model') or not callable(self.puffin_ai.clone_core_model):
             raise NotImplementedError("PuffinZipAI instance must have a 'clone_core_model()' method.")
@@ -193,6 +273,14 @@ class EvolvingAgent:
         cloned_puffin_ai = self.puffin_ai.clone_core_model()
         clone_id = new_agent_id if new_agent_id is not None else str(uuid.uuid4())
         clone_generation = new_generation_born if new_generation_born is not None else self.generation_born
+
+        # Deep-copy recipe so clone gets its own mutable copy
+        cloned_recipe = None
+        if self.novel_recipe is not None:
+            try:
+                cloned_recipe = copy.deepcopy(self.novel_recipe)
+            except Exception:
+                pass
 
         cloned_agent = EvolvingAgent(
             puffin_ai_instance=cloned_puffin_ai,
@@ -202,6 +290,7 @@ class EvolvingAgent:
             agent_type=self.agent_type,
             # Heritage is copied so the clone inherits the full family history
             heritage=list(self.heritage),
+            novel_recipe=cloned_recipe,
         )
         # Carry over dual fitness scores
         cloned_agent.compression_fitness = self.compression_fitness
@@ -212,16 +301,21 @@ class EvolvingAgent:
     def __repr__(self):
         thresholds_str = str(self.puffin_ai.len_thresholds) if self.puffin_ai else 'N/A'
         heritage_count = len(self.heritage) if self.heritage else 0
+        recipe_str = "None"
+        if self.novel_recipe is not None:
+            recipe_str = (f"{self.novel_recipe.get_pipeline_name()}"
+                          f"({'MATURE' if self.novel_recipe.is_mature else 'evolving'})")
         return (f"EvolvingAgent(ID:{self.agent_id},Gen:{self.generation_born},"
                 f"Fit:{self.fitness:.4f},Type:{self.agent_type},"
                 f"CFit:{self.compression_fitness:.4f},RFit:{self.robustness_fitness:.4f},"
-                f"Heritage:{heritage_count},Parents:{self.parent_ids},Thresh:{thresholds_str})")
+                f"Heritage:{heritage_count},Recipe:{recipe_str},"
+                f"Parents:{self.parent_ids},Thresh:{thresholds_str})")
 
     # -----------------------------------------------------------------
     #  Pickle support — preserve v0.9.7 fields across checkpoint/restart
     # -----------------------------------------------------------------
     def __getstate__(self):
-        """Serialize ALL v0.9.7 fields so they survive checkpoint/restart.
+        """Serialize ALL v0.9.7 + v0.9.9 fields for checkpoint/restart.
 
         The underlying PuffinZipAI core has its own __getstate__ that strips
         unpicklable closures; we don't need to touch it here — pickle will
@@ -233,13 +327,25 @@ class EvolvingAgent:
         state.setdefault('agent_type', 'compression')
         state.setdefault('compression_fitness', 0.0)
         state.setdefault('robustness_fitness', 0.0)
+        # v0.9.9: Serialize recipe as a dict (NovelMethodRecipe is a dataclass
+        # but storing the dict is safer across versions).
+        recipe = state.get('novel_recipe')
+        if recipe is not None and hasattr(recipe, 'to_dict'):
+            state['_novel_recipe_dict'] = recipe.to_dict()
+        else:
+            state['_novel_recipe_dict'] = None
+        state['novel_recipe'] = None  # Don't pickle the dataclass directly
+        # Transient — never persist
+        state.pop('_pending_recipe_change', None)
         return state
 
     def __setstate__(self, state):
-        """Restore from pickle, providing defaults for any missing v0.9.7
-        fields.  This handles loading pre-v0.9.7 checkpoints that were
-        saved without heritage/agent_type/dual-fitness.
+        """Restore from pickle, providing defaults for any missing fields.
+
+        Handles loading pre-v0.9.7, pre-v0.9.9, and pre-v0.9.10 checkpoints.
         """
+        # v0.9.9: Restore recipe from serialized dict
+        recipe_dict = state.pop('_novel_recipe_dict', None)
         self.__dict__.update(state)
         # --- Backward-compatible migration from pre-v0.9.7 checkpoints ---
         if not hasattr(self, 'heritage'):
@@ -250,6 +356,32 @@ class EvolvingAgent:
             self.compression_fitness = getattr(self, 'fitness', 0.0) or 0.0
         if not hasattr(self, 'robustness_fitness'):
             self.robustness_fitness = 0.0
+        # --- v0.9.9: Restore novel_recipe ---
+        if not hasattr(self, 'novel_recipe'):
+            self.novel_recipe = None
+        if recipe_dict is not None and self.novel_recipe is None:
+            try:
+                from ..novel_compression_generator import NovelMethodRecipe
+                self.novel_recipe = NovelMethodRecipe.from_dict(recipe_dict)
+            except Exception:
+                self.novel_recipe = None
+        # --- v0.9.10: Ensure new recipe fields exist after deserialization ---
+        # Recipes from pre-v0.9.10 checkpoints won't have strength/lifecycle
+        # fields.  The from_dict method handles this via defaults, but if
+        # the recipe was deepcopied in the old format, force-fix here.
+        if self.novel_recipe is not None:
+            if not hasattr(self.novel_recipe, 'strength'):
+                self.novel_recipe.strength = 0.5
+            if not hasattr(self.novel_recipe, 'is_alive'):
+                self.novel_recipe.is_alive = True
+            if not hasattr(self.novel_recipe, 'death_generation'):
+                self.novel_recipe.death_generation = None
+            if not hasattr(self.novel_recipe, 'times_rediscovered'):
+                self.novel_recipe.times_rediscovered = 0
+            if not hasattr(self.novel_recipe, 'total_generations_active'):
+                self.novel_recipe.total_generations_active = 0
+        if not hasattr(self, '_pending_recipe_change'):
+            self._pending_recipe_change = None
 
     def __lt__(self, other):
         if not isinstance(other, EvolvingAgent):

@@ -177,6 +177,17 @@ class DeepDiveManager {
                         order: 1
                     },
                     {
+                        label: 'Avg Recipe Strength',
+                        data: [],
+                        borderColor: '#f59e0b',
+                        backgroundColor: 'rgba(245,158,11,0.1)',
+                        tension: 0.3, borderWidth: 2, pointRadius: 2,
+                        pointBackgroundColor: '#f59e0b',
+                        borderDash: [4, 3],
+                        fill: false, yAxisID: 'y', type: 'line',
+                        order: 0
+                    },
+                    {
                         label: 'Cross-Pool Breeds',
                         data: [],
                         borderColor: 'rgba(168,85,247,0.7)',
@@ -197,6 +208,17 @@ class DeepDiveManager {
                         barPercentage: 0.4,
                         categoryPercentage: 0.8,
                         order: 4
+                    },
+                    {
+                        label: 'Unique Families',
+                        data: [],
+                        borderColor: 'rgba(16,185,129,0.7)',
+                        backgroundColor: 'rgba(16,185,129,0.3)',
+                        borderWidth: 1,
+                        yAxisID: 'y2',
+                        barPercentage: 0.4,
+                        categoryPercentage: 0.8,
+                        order: 5
                     }
                 ]
             },
@@ -223,8 +245,8 @@ class DeepDiveManager {
                     y: {
                         grid: { color: '#333' }, position: 'left',
                         ticks: { color: '#22d3ee' },
-                        title: { display: true, text: 'RLE Min Run', color: '#22d3ee' },
-                        beginAtZero: true
+                        title: { display: true, text: 'RLE / Strength', color: '#22d3ee' },
+                        beginAtZero: true, max: 10
                     },
                     y2: {
                         grid: { drawOnChartArea: false }, beginAtZero: true, position: 'right',
@@ -332,6 +354,8 @@ class DeepDiveManager {
 
             // Method direction
             this.updateMethodChart(d.method_direction || []);
+            // v0.9.10: Store method registry summary for use in renderMethodSummary
+            this._methodRegistry = d.method_registry || {};
             this.renderMethodSummary(d.method_direction || []);
 
             // Generations detail
@@ -398,10 +422,40 @@ class DeepDiveManager {
         container.innerHTML = entries.map(p => {
             const color = DeepDiveManager.poolColor(p.index);
             const rootShort = (p.root_ancestor || '').substring(0, 12);
-            return `<div class="dd-pool-item">
+            // Specialization badge
+            const specIcons = { compression: '📦', robustness: '🛡️', hybrid: '🔀' };
+            const specIcon = specIcons[p.specialization] || '📦';
+            const specLabel = p.specialization || 'compression';
+            // Dual fitness scores
+            const avgComp = (p.avg_compression || 0).toFixed(2);
+            const avgRob = (p.avg_robustness || 0).toFixed(2);
+            const compAgents = p.compression_agents || 0;
+            const robAgents = p.robustness_agents || 0;
+            // v0.9.10: Recipe method info
+            const domFamily = p.dominant_family || 'none';
+            const avgStr = (p.avg_recipe_strength || 0).toFixed(2);
+            const matureCount = p.mature_recipe_count || 0;
+            const familyCount = Object.keys(p.recipe_families || {}).length;
+            const resurrectedCount = p.resurrected_agent_count || 0;
+            // Build recipe family distribution mini-bar
+            const families = p.recipe_families || {};
+            const familyEntries = Object.entries(families).sort((a,b) => b[1] - a[1]).slice(0, 3);
+            const familyBar = familyEntries.length > 0
+                ? familyEntries.map(([f, c]) => `<span style="font-size:9px;opacity:.8">${f}:${c}</span>`).join(' ')
+                : '<span style="font-size:9px;opacity:.5">no methods</span>';
+            const resurrectBadge = resurrectedCount > 0
+                ? `<span style="font-size:9px;color:#f59e0b" title="${resurrectedCount} resurrected agents">🧟${resurrectedCount}</span>`
+                : '';
+            return `<div class="dd-pool-item" title="${p.root_ancestor}\nCompression: ${avgComp} (${compAgents} agents)\nRobustness: ${avgRob} (${robAgents} agents)\nDominant Method: ${domFamily}\nAvg Strength: ${avgStr}\nMature Methods: ${matureCount}\nFamilies: ${familyCount}\nResurrected: ${resurrectedCount}">
                 <div class="dd-pool-swatch" style="background:${color};"></div>
-                <span class="dd-pool-label" title="${p.root_ancestor}">Pool ${p.index + 1} (${rootShort}…)</span>
-                <span class="dd-pool-count">${p.size} agents</span>
+                <span class="dd-pool-label">${specIcon} Pool ${p.index + 1}</span>
+                <span class="dd-pool-count">${p.size} <small style="opacity:.7">C:${avgComp} R:${avgRob}</small></span>
+                <div style="font-size:9px;margin-top:2px;display:flex;gap:4px;flex-wrap:wrap;align-items:center;">
+                    <span style="color:#f59e0b" title="Avg recipe strength">💪${avgStr}</span>
+                    <span style="color:#f43f5e" title="${matureCount} mature novel methods">🧬${matureCount}</span>
+                    ${resurrectBadge}
+                    ${familyBar}
+                </div>
             </div>`;
         }).join('');
     }
@@ -550,6 +604,13 @@ class DeepDiveManager {
                 explore: (a.exploration_rate || 0).toFixed(4), elite: isElite,
                 agentId: a.agent_id, wasBred,
                 childCount: (this._childrenOfAgent[a.agent_id] || []).length,
+                // v0.9.10: recipe info
+                recipeFamily: a.recipe_family || 'none',
+                recipeStrength: (a.recipe_strength || 0).toFixed(2),
+                recipeImprovements: a.recipe_improvements || 0,
+                hasNovelMethod: a.has_novel_method || false,
+                novelPipeline: a.novel_pipeline || 'none',
+                recipeRediscovered: a.recipe_times_rediscovered || 0,
             }));
 
             return `<div class="${classes}" style="background:${color};"
@@ -773,6 +834,18 @@ class DeepDiveManager {
                 ? `<div class="dd-tooltip-row"><span class="dd-tooltip-label">Offspring</span><span class="dd-tooltip-value" style="color:#22d3ee;">${d.childCount} children</span></div>`
                 : '';
 
+            // v0.9.10: Recipe/method info
+            const recipeFamily = d.recipeFamily || 'none';
+            const recipeStrength = d.recipeStrength || '0.00';
+            const strengthPct = Math.round(parseFloat(recipeStrength) * 100);
+            const strengthColor = strengthPct >= 70 ? '#4ade80' : strengthPct >= 30 ? '#f59e0b' : '#f43f5e';
+            const novelBadge = d.hasNovelMethod
+                ? '<span style="color:#f43f5e;font-weight:700;">✨ NOVEL</span>'
+                : `<span style="color:#94a3b8;">${d.recipeImprovements || 0} improvements</span>`;
+            const resurrectBadge = d.recipeRediscovered > 0
+                ? `<div class="dd-tooltip-row"><span class="dd-tooltip-label">Resurrected</span><span class="dd-tooltip-value" style="color:#f59e0b;">🧟 ${d.recipeRediscovered}x</span></div>`
+                : '';
+
             tip.innerHTML = `
                 <div class="dd-tooltip-row"><span class="dd-tooltip-label">Agent</span><span class="dd-tooltip-value">${d.id}</span></div>
                 <div class="dd-tooltip-row"><span class="dd-tooltip-label">Fitness</span><span class="dd-tooltip-value" style="color:#4ade80;">${d.fit}</span></div>
@@ -782,6 +855,14 @@ class DeepDiveManager {
                 ${breedInfo}
                 ${childInfo}
                 <div class="dd-tooltip-row"><span class="dd-tooltip-label">Parents</span><span class="dd-tooltip-value">${d.parents}</span></div>
+                <div style="border-top:1px solid #444;margin:4px 0;"></div>
+                <div class="dd-tooltip-row"><span class="dd-tooltip-label">Method</span><span class="dd-tooltip-value" style="font-size:10px;">${recipeFamily}</span></div>
+                <div class="dd-tooltip-row"><span class="dd-tooltip-label">Strength</span><span class="dd-tooltip-value" style="color:${strengthColor};">
+                    <span style="display:inline-block;width:40px;height:6px;background:#333;border-radius:3px;vertical-align:middle;margin-right:4px;position:relative;">
+                        <span style="display:block;width:${strengthPct}%;height:100%;background:${strengthColor};border-radius:3px;"></span>
+                    </span>${recipeStrength}</span></div>
+                <div class="dd-tooltip-row"><span class="dd-tooltip-label">Status</span><span class="dd-tooltip-value">${novelBadge}</span></div>
+                ${resurrectBadge}
                 <div class="dd-tooltip-row"><span class="dd-tooltip-label">LR</span><span class="dd-tooltip-value">${d.lr}</span></div>
                 <div class="dd-tooltip-row"><span class="dd-tooltip-label">Explore</span><span class="dd-tooltip-value">${d.explore}</span></div>
                 ${d.elite ? '<div style="text-align:center;margin-top:4px;color:#ffd700;font-weight:700;">⭐ ELITE</div>' : ''}
@@ -1082,13 +1163,15 @@ class DeepDiveManager {
 
         this.methodChart.data.labels = methodDir.map(m => m.generation);
         this.methodChart.data.datasets[0].data = methodDir.map(m => m.avg_rle_min_run ?? null);
-        this.methodChart.data.datasets[1].data = methodDir.map(m => m.cross_pool_breeding || 0);
-        this.methodChart.data.datasets[2].data = methodDir.map(m => m.novel_method_count || 0);
+        this.methodChart.data.datasets[1].data = methodDir.map(m => m.avg_recipe_strength ?? 0);
+        this.methodChart.data.datasets[2].data = methodDir.map(m => m.cross_pool_breeding || 0);
+        this.methodChart.data.datasets[3].data = methodDir.map(m => m.novel_method_count || 0);
+        this.methodChart.data.datasets[4].data = methodDir.map(m => m.unique_families || 0);
         this.methodChart.update('none');
     }
 
     /* ------------------------------------------------------------------
-       Method Direction Summary Cards
+       Method Direction Summary Cards — Enhanced v0.9.10
        ------------------------------------------------------------------ */
     renderMethodSummary(methodDir) {
         const container = document.getElementById('dd-method-summary');
@@ -1119,19 +1202,46 @@ class DeepDiveManager {
         // Cross-pool total
         const totalCross = methodDir.reduce((s, m) => s + (m.cross_pool_breeding || 0), 0);
 
-        // Most common threshold config
-        const latestThreshold = latest.top_threshold_config || 'N/A';
+        // v0.9.10: Strength + family stats
+        const avgStrength = (latest.avg_recipe_strength || 0).toFixed(2);
+        const strengthPct = Math.round(parseFloat(avgStrength) * 100);
+        const strengthColor = strengthPct >= 70 ? '#4ade80' : strengthPct >= 30 ? '#f59e0b' : '#f43f5e';
+        const matureCount = latest.mature_recipe_count || 0;
+        const uniqueFamilies = latest.unique_families || 0;
+        const dominantFamily = latest.dominant_family || 'none';
+        const resurrectedCount = latest.resurrected_count || 0;
+
+        // v0.9.10: Method registry data (stored on the manager from poll)
+        const reg = this._methodRegistry || {};
+        const totalFamilies = reg.total_families || 0;
+        const aliveFamilies = reg.alive_families || 0;
+        const deadFamilies = reg.dead_families || 0;
+        const totalRediscoveries = reg.total_rediscoveries || 0;
 
         container.innerHTML = `
             <div class="dd-method-card">
-                <div class="dd-method-card-label">RLE Min Run Trend</div>
-                <div class="dd-method-card-value" style="color:${rleTrendColor};">${rleTrend}</div>
-                <div class="dd-method-card-sub">Current: ${rleLatest != null ? rleLatest.toFixed(2) : '—'}</div>
+                <div class="dd-method-card-label">Avg Recipe Strength</div>
+                <div class="dd-method-card-value" style="color:${strengthColor};">
+                    <span style="display:inline-block;width:50px;height:8px;background:#333;border-radius:4px;vertical-align:middle;margin-right:6px;">
+                        <span style="display:block;width:${strengthPct}%;height:100%;background:${strengthColor};border-radius:4px;"></span>
+                    </span>${avgStrength}
+                </div>
+                <div class="dd-method-card-sub">LoRA-like intensity</div>
             </div>
             <div class="dd-method-card">
                 <div class="dd-method-card-label">Novel Methods</div>
-                <div class="dd-method-card-value" style="color:#f43f5e;">${totalNovel}</div>
-                <div class="dd-method-card-sub">across ${methodDir.length} gen${methodDir.length > 1 ? 's' : ''}</div>
+                <div class="dd-method-card-value" style="color:#f43f5e;">${matureCount} <small style="font-size:10px;opacity:.7">now</small></div>
+                <div class="dd-method-card-sub">${totalNovel} total across ${methodDir.length} gen${methodDir.length > 1 ? 's' : ''}</div>
+            </div>
+            <div class="dd-method-card">
+                <div class="dd-method-card-label">Method Families</div>
+                <div class="dd-method-card-value" style="color:#10b981;">${uniqueFamilies} <small style="font-size:10px;opacity:.7">active</small></div>
+                <div class="dd-method-card-sub">Dominant: ${dominantFamily}</div>
+            </div>
+            <div class="dd-method-card">
+                <div class="dd-method-card-label">RLE Trend</div>
+                <div class="dd-method-card-value" style="color:${rleTrendColor};">${rleTrend}</div>
+                <div class="dd-method-card-sub">Current: ${rleLatest != null ? rleLatest.toFixed(2) : '—'}</div>
             </div>
             <div class="dd-method-card">
                 <div class="dd-method-card-label">Cross-Pool Breeds</div>
@@ -1139,9 +1249,9 @@ class DeepDiveManager {
                 <div class="dd-method-card-sub">genetic diversity events</div>
             </div>
             <div class="dd-method-card">
-                <div class="dd-method-card-label">Top Threshold Config</div>
-                <div class="dd-method-card-value" style="font-size:11px;color:#22d3ee;">${latestThreshold}</div>
-                <div class="dd-method-card-sub">most common in latest gen</div>
+                <div class="dd-method-card-label">Method Registry</div>
+                <div class="dd-method-card-value" style="color:#22d3ee;">${totalFamilies}</div>
+                <div class="dd-method-card-sub">🟢${aliveFamilies} alive · 💀${deadFamilies} graveyard · 🧟${totalRediscoveries} resurrections</div>
             </div>
         `;
     }

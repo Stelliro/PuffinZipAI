@@ -1144,6 +1144,8 @@ class PuffinZipAI:
         # rle_min_run, steps) is stored so novel methods survive
         # save/load/restart.  This is the key to persistence: we store the
         # *recipe*, not the closure, then rebuild the closures on load.
+        # v0.9.9: The metadata may also contain a 'recipe' key with the full
+        # NovelMethodRecipe dict — that takes priority during restore.
         novel_meta = None
         if self.novel_method is not None:
             md = getattr(self.novel_method, 'metadata', {})
@@ -1155,6 +1157,8 @@ class PuffinZipAI:
                 'name': getattr(self.novel_method, 'name', 'restored_novel'),
                 'description': getattr(self.novel_method, 'description', ''),
                 'author': getattr(self.novel_method, 'author', 'NovelCompressionGenerator_v2'),
+                'recipe': md.get('recipe'),       # v0.9.9: full recipe dict
+                'is_mature': md.get('is_mature'),  # v0.9.9: maturity flag
             }
         state['novel_method'] = None
         state['_novel_method_meta'] = novel_meta
@@ -1184,36 +1188,51 @@ class PuffinZipAI:
         # Rebuild novel compression closures from the stored pipeline recipe.
         # The recipe (pipeline name, discovery_seed, rle_min_run, steps) was
         # saved by __getstate__ so that novel methods survive save/load/restart.
+        # v0.9.9: If a full recipe dict is present, use build_method_from_recipe
+        # for more accurate reconstruction (including maturity state).
         if novel_meta:
             try:
                 from .novel_compression_generator import NovelCompressionGenerator
                 gen = NovelCompressionGenerator()
-                cfn, dfn = gen._build_pipeline(
-                    novel_meta['pipeline'],
-                    discovery_seed=novel_meta.get('discovery_seed'),
-                    rle_min_run=novel_meta.get('rle_min_run'),
-                )
-                from .compression_method_registry import CompressionMethod, CompressionLanguage
-                # Rebuild the full metadata dict so downstream code sees the
-                # same fields as a freshly-generated method.
-                restored_metadata = {
-                    'pipeline': novel_meta.get('pipeline', 'rle_only'),
-                    'discovery_seed': novel_meta.get('discovery_seed'),
-                    'rle_min_run': novel_meta.get('rle_min_run', 3),
-                    'steps': novel_meta.get('steps', []),
-                }
-                self.novel_method = CompressionMethod(
-                    name=novel_meta.get('name', 'restored_novel'),
-                    language=CompressionLanguage.HYBRID,
-                    compress_fn=cfn,
-                    decompress_fn=dfn,
-                    description=novel_meta.get('description', ''),
-                    author=novel_meta.get('author', 'NovelCompressionGenerator_v2'),
-                    is_novelty=True,
-                    metadata=restored_metadata,
-                )
-                self._novel_compress_fn = cfn
-                self._novel_decompress_fn = dfn
+
+                # v0.9.9: Try recipe-based restore first
+                recipe_dict = novel_meta.get('recipe')
+                if recipe_dict is not None:
+                    from .novel_compression_generator import NovelMethodRecipe
+                    recipe = NovelMethodRecipe.from_dict(recipe_dict)
+                    method = gen.build_method_from_recipe(
+                        recipe,
+                        method_name=novel_meta.get('name', 'restored_novel'),
+                    )
+                    self.novel_method = method
+                    self._novel_compress_fn = method.compress_fn
+                    self._novel_decompress_fn = method.decompress_fn
+                else:
+                    # Legacy fallback: rebuild from pipeline name + seed
+                    cfn, dfn = gen._build_pipeline(
+                        novel_meta['pipeline'],
+                        discovery_seed=novel_meta.get('discovery_seed'),
+                        rle_min_run=novel_meta.get('rle_min_run'),
+                    )
+                    from .compression_method_registry import CompressionMethod, CompressionLanguage
+                    restored_metadata = {
+                        'pipeline': novel_meta.get('pipeline', 'rle_only'),
+                        'discovery_seed': novel_meta.get('discovery_seed'),
+                        'rle_min_run': novel_meta.get('rle_min_run', 3),
+                        'steps': novel_meta.get('steps', []),
+                    }
+                    self.novel_method = CompressionMethod(
+                        name=novel_meta.get('name', 'restored_novel'),
+                        language=CompressionLanguage.HYBRID,
+                        compress_fn=cfn,
+                        decompress_fn=dfn,
+                        description=novel_meta.get('description', ''),
+                        author=novel_meta.get('author', 'NovelCompressionGenerator_v2'),
+                        is_novelty=True,
+                        metadata=restored_metadata,
+                    )
+                    self._novel_compress_fn = cfn
+                    self._novel_decompress_fn = dfn
             except Exception:
                 self.novel_method = None
                 self._novel_compress_fn = None
